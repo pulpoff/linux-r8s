@@ -20,6 +20,7 @@
 #include <linux/clk.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/kexec.h>
 #include <linux/cpufreq.h>
 #include <linux/slab.h>
 #include <linux/err.h>
@@ -880,6 +881,21 @@ static int s3c2410wdt_probe(struct platform_device *pdev)
 static void s3c2410wdt_shutdown(struct platform_device *dev)
 {
 	struct s3c2410_wdt *wdt = platform_get_drvdata(dev);
+
+	/*
+	 * Into a kexec, a running watchdog keeps running, at its longest
+	 * timeout: a kernel that hangs before its own watchdog driver takes
+	 * over still resets the board.
+	 */
+	if (kexec_in_progress &&
+	    (readl(wdt->reg_base + S3C2410_WTCON) & S3C2410_WTCON_ENABLE)) {
+		s3c2410wdt_set_heartbeat(&wdt->wdt_device,
+					 wdt->wdt_device.max_timeout);
+		s3c2410wdt_keepalive(&wdt->wdt_device);
+		dev_info(&dev->dev, "left running for kexec, %us\n",
+			 wdt->wdt_device.timeout);
+		return;
+	}
 
 	s3c2410wdt_enable(wdt, false);
 	s3c2410wdt_stop(&wdt->wdt_device);
