@@ -47,8 +47,10 @@
 		      <0x0 0xc1200000 0x0 0x1ee00000>,
 		      /* Memory hole */
 		      <0x0 0xe1900000 0x0 0x1e700000>,
-		      /* Memory hole - last block */
-		      <0x8 0x80000000 0x0 0xc0000000>;
+		      /* Memory hole - last block: 4 GiB on the 6 GiB G780F, as
+		       * S-Boot lists it (8 x 512 MiB to 0x980000000); its top
+		       * 18 MiB is the hypervisor's, see el2_earlymem */
+		      <0x8 0x80000000 0x1 0x00000000>;
 	};
 
 	/* TODO: Remove this once PMIC is implemented */
@@ -162,6 +164,13 @@
 
 		sec_rdx_bootdev: debug-rdx@880000000 {
 			reg = <0x8 0x80000000 0 0xad00000>;
+			no-map;
+		};
+
+		/* the uH hypervisor's early memory at the top of DRAM; S-Boot
+		 * reserves it without no-map, so it must never be touched */
+		el2_earlymem: el2-earlymem@97ee00000 {
+			reg = <0x9 0x7ee00000 0 0x1200000>;
 			no-map;
 		};
 
