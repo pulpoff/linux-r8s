@@ -28,7 +28,7 @@
 		 * S-Boot's command line reaches the kernel. The clocks feeding
 		 * DECON have no consumer here: keep them on.
 		 */
-		bootargs = "console=tty0 loglevel=7 ignore_loglevel fbcon=font:TER16x32 clk_ignore_unused pd_ignore_unused panic=5 printk.devkmsg=on";
+		bootargs = "console=tty0 loglevel=7 ignore_loglevel fbcon=font:TER16x32 clk_ignore_unused pd_ignore_unused panic=5 printk.devkmsg=on s3c2410_wdt.tmr_atboot=1 s3c2410_wdt.tmr_margin=60 sysctl.kernel.panic_on_rcu_stall=1";
 
 		framebuffer0: framebuffer@f1000000 {
 			compatible = "simple-framebuffer";
@@ -171,6 +171,16 @@
 		};
 	};
 
+	/* UFS VCC: downstream "ufs-vcc" fixed regulator on gpg1-0 (xboot-ldo). */
+	ufs_vcc_reg: regulator-ufs-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "ufs-vcc";
+		gpio = <&gpg1 0 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -240,10 +250,22 @@
 	};
 };
 
+/*
+ * cluster0's watchdog is the one S-Boot sets up and the U-Boot shim arms;
+ * cluster2's would only be a second /dev/watchdog nobody feeds.
+ */
+&watchdog_cl2 {
+	status = "disabled";
+};
+
 &usbdrd {
 	status = "okay";
 	vdd10-supply = <&reg_dummy>;
 	vdd33-supply = <&reg_dummy>;
+};
+
+&ufs_0 {
+	vcc-supply = <&ufs_vcc_reg>;
 };
 
 &usbdrd_dwc3 {
