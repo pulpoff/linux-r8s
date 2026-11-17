@@ -23,6 +23,13 @@
 		#size-cells = <2>;
 		ranges;
 
+		/*
+		 * The shim in BOOT ignores the DTB S-Boot passes, so nothing of
+		 * S-Boot's command line reaches the kernel. The clocks feeding
+		 * DECON have no consumer here: keep them on.
+		 */
+		bootargs = "console=tty0 loglevel=7 ignore_loglevel fbcon=font:TER16x32 clk_ignore_unused pd_ignore_unused panic=5 printk.devkmsg=on";
+
 		framebuffer0: framebuffer@f1000000 {
 			compatible = "simple-framebuffer";
 			reg = <0 0xf1000000 0 (1080 * 2400 * 4)>;
@@ -55,8 +62,106 @@
 		#size-cells = <2>;
 		ranges;
 
+		/*
+		 * Carve-outs below are the fixed regions S-Boot hands its own
+		 * kernel (/sys/firmware/fdt of a stock-bootloader boot, G780FXXUAEVK3).
+		 */
+
+		/* sec_debug_magic page + the KASLR page S-Boot fills */
+		sec_debug_magic: debug-magic@80000000 {
+			reg = <0 0x80000000 0 0x2000>;
+			no-map;
+		};
+
+		/* sec_debug_next=0x1000000@0x91200000 on S-Boot's command line */
+		sec_debug_next: debug-next@91200000 {
+			reg = <0 0x91200000 0 0x1000000>;
+			no-map;
+		};
+
+		secure_camera: secure-camera@96000000 {
+			reg = <0 0x96000000 0 0x3200000>;
+			no-map;
+		};
+
+		/* hypervisor code: the kernel runs at EL1 under it */
+		el2_code: el2-code@c1400000 {
+			reg = <0 0xc1400000 0 0x200000>;
+			no-map;
+		};
+
+		s2mpu_table: s2mpu@c1800000 {
+			reg = <0 0xc1800000 0 0x300000>;
+			no-map;
+		};
+
+		seclog: seclog@c3000000 {
+			reg = <0 0xc3000000 0 0x80000>;
+			no-map;
+		};
+
+		cp_rmem_2: modem@d0000000 {
+			reg = <0 0xd0000000 0 0x4000000>;
+			no-map;
+		};
+
+		/* dss log_pstore, log_s2d, log_arrdumppanic, camera_rmem, teegris_rmem */
+		dss_low: debug@eb308000 {
+			reg = <0 0xeb308000 0 0x200a000>;
+			no-map;
+		};
+
+		cp_rmem: modem@f0000000 {
+			reg = <0 0xf0000000 0 0x800000>;
+			no-map;
+		};
+
 		cont_splash_mem: framebuffer@f1000000 {
 			reg = <0 0xf1000000 0 0x13c6800>;
+			no-map;
+		};
+
+		abox_pci_rmem: audio@f4200000 {
+			reg = <0 0xf4200000 0 0x800000>;
+			no-map;
+		};
+
+		cp_msi_rmem: modem-msi@f6200000 {
+			reg = <0 0xf6200000 0 0x1000>;
+			no-map;
+		};
+
+		wifi_msi_rmem: wifi-msi@f7200000 {
+			reg = <0 0xf7200000 0 0x1000>;
+			no-map;
+		};
+
+		/* debug-snapshot header, before the log_kernel buffer */
+		dss_header: debug@fd900000 {
+			reg = <0 0xfd900000 0 0x10000>;
+			no-map;
+		};
+
+		/*
+		 * debug-snapshot log_kernel: the stock and Lineage Recovery
+		 * kernels show this buffer raw as /proc/last_kmsg on the next
+		 * boot, so a console written here is readable from the recovery.
+		 */
+		ramoops@fd910000 {
+			compatible = "ramoops";
+			reg = <0 0xfd910000 0 0x200000>;
+			console-size = <0x200000>;
+			no-map;
+		};
+
+		/* debug-snapshot log_platform .. log_fatal, up to 4 GiB */
+		dss_high: debug@fdb10000 {
+			reg = <0 0xfdb10000 0 0x24f0000>;
+			no-map;
+		};
+
+		sec_rdx_bootdev: debug-rdx@880000000 {
+			reg = <0x8 0x80000000 0 0xad00000>;
 			no-map;
 		};
 
@@ -120,10 +225,31 @@
 	};
 };
 
+&pmu_system_controller {
+	/*
+	 * S-Boot's reboot reason, PMU INFORM3 (downstream sec_reboot.c):
+	 * 0x12345600 | 0 normal, 1 download, 4 recovery, 0xd bootloader.
+	 */
+	reboot-mode {
+		compatible = "syscon-reboot-mode";
+		offset = <0x80c>;
+		mode-normal = <0x12345600>;
+		mode-download = <0x12345601>;
+		mode-recovery = <0x12345604>;
+		mode-bootloader = <0x1234560d>;
+	};
+};
+
 &usbdrd {
 	status = "okay";
 	vdd10-supply = <&reg_dummy>;
 	vdd33-supply = <&reg_dummy>;
+};
+
+&usbdrd_dwc3 {
+	/* no role switch or extcon yet: a device, always */
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
 };
 
 &usbdrd_phy {
