@@ -19,6 +19,13 @@
 #define EXYNOS_MBOX_INTMR0		0x28	/* Interrupt Mask Register 0 */
 #define EXYNOS_MBOX_INTGR1		0x40	/* Interrupt Generation Register 1 */
 
+/*
+ * Exynos 990 (and 9820): the AP raises the APM's interrupts in the upper half of INTGR0, and masks the APM's ones in
+ * INTMR1 (the vendor acpm_ipc driver).
+ */
+#define EXYNOS990_MBOX_INTGR0		0x08
+#define EXYNOS990_MBOX_INTMR1		0x24
+
 #define EXYNOS_MBOX_INTMR0_MASK		GENMASK(15, 0)
 #define EXYNOS_MBOX_INTGR1_MASK		GENMASK(15, 0)
 
@@ -32,6 +39,31 @@
 struct exynos_mbox {
 	void __iomem *regs;
 	struct mbox_controller *mbox;
+	const struct exynos_mbox_variant *variant;
+};
+
+/**
+ * struct exynos_mbox_variant - where a mailbox generation raises and masks interrupts
+ * @intgr:	the register that raises the remote side's interrupt for a channel
+ * @intgr_shift: where channel 0's bit is in @intgr
+ * @intmr:	the register that masks the interrupts towards us
+ */
+struct exynos_mbox_variant {
+	u32 intgr;
+	u32 intgr_shift;
+	u32 intmr;
+};
+
+static const struct exynos_mbox_variant gs101_mbox = {
+	.intgr = EXYNOS_MBOX_INTGR1,
+	.intgr_shift = 0,
+	.intmr = EXYNOS_MBOX_INTMR0,
+};
+
+static const struct exynos_mbox_variant exynos990_mbox = {
+	.intgr = EXYNOS990_MBOX_INTGR0,
+	.intgr_shift = 16,
+	.intmr = EXYNOS990_MBOX_INTMR1,
 };
 
 static int exynos_mbox_send_data(struct mbox_chan *chan, void *data)
@@ -50,7 +82,8 @@ static int exynos_mbox_send_data(struct mbox_chan *chan, void *data)
 		return -EINVAL;
 	}
 
-	writel(BIT(msg->chan_id), exynos_mbox->regs + EXYNOS_MBOX_INTGR1);
+	writel(BIT(msg->chan_id) << exynos_mbox->variant->intgr_shift,
+	       exynos_mbox->regs + exynos_mbox->variant->intgr);
 
 	return 0;
 }
@@ -80,7 +113,8 @@ static struct mbox_chan *exynos_mbox_of_xlate(struct mbox_controller *mbox,
 }
 
 static const struct of_device_id exynos_mbox_match[] = {
-	{ .compatible = "google,gs101-mbox" },
+	{ .compatible = "google,gs101-mbox", .data = &gs101_mbox },
+	{ .compatible = "samsung,exynos990-mbox", .data = &exynos990_mbox },
 	{},
 };
 MODULE_DEVICE_TABLE(of, exynos_mbox_match);
@@ -110,7 +144,12 @@ static int exynos_mbox_probe(struct platform_device *pdev)
 	if (IS_ERR(exynos_mbox->regs))
 		return PTR_ERR(exynos_mbox->regs);
 
-	pclk = devm_clk_get_enabled(dev, "pclk");
+	exynos_mbox->variant = of_device_get_match_data(dev);
+	if (!exynos_mbox->variant)
+		return -ENODEV;
+
+	/* optional: on the Exynos 990 there is no CMU_APM driver yet, and the bootloader leaves it running */
+	pclk = devm_clk_get_optional_enabled(dev, "pclk");
 	if (IS_ERR(pclk))
 		return dev_err_probe(dev, PTR_ERR(pclk),
 				     "Failed to enable clock.\n");
@@ -126,7 +165,7 @@ static int exynos_mbox_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, exynos_mbox);
 
 	/* Mask out all interrupts. We support just polling channels for now. */
-	writel(EXYNOS_MBOX_INTMR0_MASK, exynos_mbox->regs + EXYNOS_MBOX_INTMR0);
+	writel(EXYNOS_MBOX_INTMR0_MASK, exynos_mbox->regs + exynos_mbox->variant->intmr);
 
 	return devm_mbox_controller_register(dev, mbox);
 }
