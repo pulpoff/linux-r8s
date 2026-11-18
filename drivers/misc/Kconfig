@@ -634,6 +634,17 @@ config MCHP_LAN966X_PCI
 	    - lan966x-miim (MDIO_MSCC_MIIM)
 	    - lan966x-switch (LAN966X_SWITCH)
 
+config S5123_CP
+	tristate "Samsung S5123 modem link over PCIe (Exynos 990)"
+	depends on PCI_MSI && OF
+	depends on WWAN
+	depends on PCIE_EXYNOS990_GEN4
+	help
+	  Carries the IPC channels of the Exynos Modem 5123 on the Galaxy
+	  S20 FE (SM-G780F) once userspace has booted it: lays out the SBD
+	  rings and the pktproc queue at INIT_START, finishes the handshake
+	  and exposes umts_ipc0/ipc1/rfs0, a WWAN AT port bridge and rmnet0.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
