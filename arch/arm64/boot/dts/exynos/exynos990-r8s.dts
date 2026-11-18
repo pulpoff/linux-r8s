@@ -310,6 +310,11 @@
 	status = "okay";
 };
 
+/* S-Boot's running pipeline: page flips only, the EA8079 stays as S-Boot set it up */
+&decon0 {
+	status = "okay";
+};
+
 &pmu_system_controller {
 	/*
 	 * S-Boot's reboot reason, PMU INFORM3 (downstream sec_reboot.c):

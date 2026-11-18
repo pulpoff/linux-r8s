@@ -518,6 +518,23 @@
 			reg = <0x15c30000 0x1000>;
 		};
 
+		/*
+		 * DECON0 with the IDMA channel 0 and DSIM0 the bootloader drives the
+		 * built-in panel through. FRAME_START is the first of DECON0's
+		 * interrupts (then FRAME_DONE, EXTRA).
+		 */
+		decon0: display-controller@19050000 {
+			compatible = "samsung,exynos990-decon-handover";
+			reg = <0x19050000 0x10000>,
+			      <0x19091000 0x1000>,
+			      <0x190c0000 0x300>;
+			reg-names = "decon", "idma0", "dsim";
+			interrupts = <GIC_SPI 254 IRQ_TYPE_LEVEL_HIGH>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		cmu_top: clock-controller@1a330000 {
 			compatible = "samsung,exynos990-cmu-top";
 			reg = <0x1a330000 0x8000>;
