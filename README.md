@@ -3,8 +3,9 @@ Linux 7.2.15 for the Samsung Galaxy S20 FE (r8s, SM-G780F)
 
 Mainline Linux for the Samsung Galaxy S20 FE 4G (SM-G780F, codename r8s, Exynos 990), the kernel
 of the phone's [VibeOS](https://vibeos.top) port. The phone boots Debian from its own storage
-on all 8 cores, charges, and drives its panel, touchscreen and GPU: GNOME runs on it. The radios
-and sound are not done yet.
+on all 8 cores, charges, and drives its panel, touchscreen and GPU: GNOME runs on it. It is on
+Wi-Fi and LTE, answers calls with sound both ways, plays through its speakers and records
+through both microphones. Bluetooth, the cameras and the sensors are not done yet.
 
 The tree is stable **v7.2.15** plus the S20 FE changes below, each its own commit on `main`; new
 work is pushed as it lands. 7.2 is end of life on kernel.org and this tree stays on 7.2.15.
@@ -31,12 +32,20 @@ What works
 | Keys | the power key (the volume keys are in the DT, untested) |
 | CPUs | all 8 cores (4 Cortex-A55, 2 Cortex-A76, 2 Mongoose M5) through PSCI, with the PMU power-down handshake of the stock kernel: CPU hotplug works, and a kernel started with kexec gets every core. Frequency scaling (schedutil) through the APM firmware, on the ECT's levels: A55s 442 to 2002 MHz, A76s 507 to 2504 MHz, M5s 546 to 2730 MHz. No idle states yet |
 | Scheduling | the scheduler knows the three core types (capacities from the stock firmware); HZ=1000, full preemption, schedutil, BFQ, MGLRU |
+| Wi-Fi | QCA6390 on the GEN2 PCIe channel through ath11k, with linux-firmware's QCA6390 hw2.0 files: associates at boot, about 105 Mbit/s down and 86 up on 2.4 GHz. Samsung's EL2 blocks the Wi-Fi's DMA in an S2MPU until the kernel opens a window for it (`samsung,s2mpu` in the DT); a new fault detector logs any DMA it still blocks |
+| Modem | S5123 on the GEN4 PCIe channel. Userspace boots it (power, its bootloader over SPI, the link, then the modem image from the phone's own partitions; the tools are VibeOS's, not in this repository); `s5123-cp` then carries Samsung IPC, the modem's remote file system, an AT port and packet data: ModemManager registers on LTE and brings `rmnet0` up |
+| Calls | incoming calls ring, are answered and hung up through ModemManager (placing a call is untested: the test SIM has no credit). The call's sound runs in ABOX's own firmware, which this kernel boots for each call: the caller is heard in the earpiece and the microphones are heard by the caller |
+| Sound | ABOX without its firmware: PCM to the earpiece and loudspeaker amps (two CS35L40 on one TDM bus), as PipeWire's speakers |
+| Microphones | both PDM microphones through the VTS serial LIF into ABOX, as PipeWire's internal microphone ("Mic Select": main, top or both) |
+| Vibrator | the MAX77705's haptic motor on a PWM timer (force feedback, feedbackd) |
+| Torch | the RT8547 camera flash in torch mode, up to 225 mA |
 
 Not yet
 =======
 
-Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, CPU idle
-states and suspend.
+Bluetooth (the QCA6390's ROM ignores the baud-rate change and its patch never starts), the
+loudspeaker, mute and echo-cancellation settings in calls, cameras, sensors, CPU idle states and
+suspend.
 
 Changes on top of 7.2.15
 ========================
@@ -46,10 +55,21 @@ Changes on top of 7.2.15
 * `mfd: max77705`: accepts the MAX77705C (PMIC ID 0x15, pass 2) the S20 FE carries.
 * `phy: samsung-ufs` and `scsi: ufs: exynos`: Exynos 990 UFS PHY and host variant.
 * `watchdog: s3c2410_wdt`: a running watchdog stays running across kexec.
+* `clk: samsung: exynos990`: HSI2's bus clock stays on; USI16 sets its rate.
+* `regulator: s2mps11`: the S2MPS19's LDO13 and LDO14.
+* `iommu/exynos`: fault reports are rate-limited.
+* `soc: samsung: exynos-s2mpufd`: reports DMA that the EL2 S2MPU blocked.
+* `PCI: dwc`: the Exynos 990 GEN2 (Wi-Fi) and GEN4 (modem) root complexes.
+* `misc: s5123-cp`: the S5123 modem's IPC and data over PCIe.
+* `leds: rt8547`: the torch.
+* `ASoC: cs35l41`: 32-bit slots.
+* `ASoC: samsung`: Exynos 990 ABOX (and its firmware for calls), the VTS serial LIF and the
+  S20 FE card.
 * `arm64: dts: exynos990`: UFS, the USI03/USI07 I2C channels, CPU capacities and power
-  coefficients.
+  coefficients, the PCIe channels, ABOX, the VTS serial LIF, the PWM timers.
 * `arm64: dts: exynos990-r8s`: carve-outs, ramoops, reboot modes, USB device mode, UFS supply,
-  all of the RAM, the MAX77705 charger and fuel gauge, the touchscreen bus.
+  all of the RAM, the MAX77705 charger and fuel gauge, the touchscreen bus, Wi-Fi, the modem,
+  the amps, the microphones, the vibrator and the torch.
 * `arm64: configs: r8s_defconfig`.
 
 Building
