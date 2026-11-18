@@ -151,7 +151,7 @@ static int zt_write_cmd(struct zt7650 *zt, u16 reg)
 }
 
 /* Power the chip and start its firmware; the checksum reads 0x55aa once it runs. */
-static int zt7650_power_on(struct zt7650 *zt)
+static int zt7650_power_on_once(struct zt7650 *zt)
 {
 	struct device *dev = &zt->client->dev;
 	u16 val;
@@ -203,8 +203,28 @@ static int zt7650_power_on(struct zt7650 *zt)
 	return 0;
 
 fail:
-	dev_err(dev, "power-on sequence failed: %d\n", error);
 	regulator_disable(zt->vdd);
+	return error;
+}
+
+static int zt7650_power_on(struct zt7650 *zt)
+{
+	struct device *dev = &zt->client->dev;
+	int error;
+
+	error = zt7650_power_on_once(zt);
+	if (!error)
+		return 0;
+
+	/*
+	 * The first transfer after a cold power-up can time out (after a kexec from a kernel that had powered the
+	 * chip down); the vendor driver then powers it off and on again. The supply's off-on delay keeps it off
+	 * for long enough.
+	 */
+	dev_warn(dev, "power-on sequence failed (%d), once more\n", error);
+	error = zt7650_power_on_once(zt);
+	if (error)
+		dev_err(dev, "power-on sequence failed: %d\n", error);
 	return error;
 }
 
