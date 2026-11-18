@@ -20,6 +20,7 @@ struct acpm_clk {
 	u32 id;
 	struct clk_hw hw;
 	unsigned int mbox_chan_id;
+	unsigned long rate;
 	struct acpm_handle *handle;
 };
 
@@ -29,6 +30,7 @@ struct acpm_clk_variant {
 
 struct acpm_clk_driver_data {
 	const struct acpm_clk_variant *clks;
+	const struct clk_ops *clk_ops;
 	unsigned int nr_clks;
 	unsigned int mbox_chan_id;
 };
@@ -39,6 +41,35 @@ struct acpm_clk_driver_data {
 	{						\
 		.name		= cname,		\
 	}
+
+static unsigned long exynos9820_clk_recalc_rate(struct clk_hw *hw,
+						unsigned long parent_rate)
+{
+	struct acpm_clk *clk = to_acpm_clk(hw);
+
+	return clk->rate;
+}
+
+static int exynos9820_clk_determine_rate(struct clk_hw *hw,
+					 struct clk_rate_request *req)
+{
+	return 0;
+}
+
+static int exynos9820_clk_set_rate(struct clk_hw *hw, unsigned long rate,
+				   unsigned long parent_rate)
+{
+	int ret;
+	struct acpm_clk *clk = to_acpm_clk(hw);
+
+	ret = clk->handle->ops->dvfs.set_rate(clk->handle, clk->mbox_chan_id,
+					      clk->id, rate);
+	if (!ret) {
+		clk->rate = rate;
+	}
+
+	return ret;
+}
 
 static const struct acpm_clk_variant gs101_acpm_clks[] = {
 	ACPM_CLK("mif"),
@@ -60,6 +91,65 @@ static const struct acpm_clk_variant gs101_acpm_clks[] = {
 static const struct acpm_clk_driver_data acpm_clk_gs101 = {
 	.clks = gs101_acpm_clks,
 	.nr_clks = ARRAY_SIZE(gs101_acpm_clks),
+	.mbox_chan_id = 0,
+};
+
+static const struct acpm_clk_variant exynos9820_acpm_clks[] = {
+	ACPM_CLK("mif"),
+	ACPM_CLK("int"),
+	ACPM_CLK("cpucl0"),
+	ACPM_CLK("cpucl1"),
+	ACPM_CLK("cpucl2"),
+	ACPM_CLK("npu"),
+	ACPM_CLK("disp"),
+	ACPM_CLK("score"),
+	ACPM_CLK("aud"),
+	ACPM_CLK("cp"),		/* Not a clock? */
+	ACPM_CLK("g3d"),
+	ACPM_CLK("intcam"),
+	ACPM_CLK("cam"),
+	ACPM_CLK("iva"),
+	ACPM_CLK("mfc"),
+};
+
+/* the Exynos 990's DVFS domains (acpm_dvfs_id in the vendor's acpm_dvfs_exynos9830.h) */
+static const struct acpm_clk_variant exynos990_acpm_clks[] = {
+	ACPM_CLK("mif"),
+	ACPM_CLK("int"),
+	ACPM_CLK("cpucl0"),
+	ACPM_CLK("cpucl1"),
+	ACPM_CLK("cpucl2"),
+	ACPM_CLK("npu"),
+	ACPM_CLK("disp"),
+	ACPM_CLK("dsp"),
+	ACPM_CLK("aud"),
+	ACPM_CLK("cp"),
+	ACPM_CLK("g3d"),
+	ACPM_CLK("intcam"),
+	ACPM_CLK("cam"),
+	ACPM_CLK("tnr"),
+	ACPM_CLK("dnc"),
+	ACPM_CLK("mfc"),
+};
+
+static const struct clk_ops exynos9820_clk_ops = {
+	.recalc_rate = exynos9820_clk_recalc_rate,
+	.determine_rate = exynos9820_clk_determine_rate,
+	.set_rate = exynos9820_clk_set_rate,
+};
+
+static const struct acpm_clk_driver_data acpm_clk_exynos9820 = {
+	.clks = exynos9820_acpm_clks,
+	.clk_ops = &exynos9820_clk_ops,
+	.nr_clks = ARRAY_SIZE(exynos9820_acpm_clks),
+	.mbox_chan_id = 0,
+};
+
+/* like the 9820's: rate changes on ACPM channel 0, and FREQ_GET does not answer, so rates are cached */
+static const struct acpm_clk_driver_data acpm_clk_exynos990 = {
+	.clks = exynos990_acpm_clks,
+	.clk_ops = &exynos9820_clk_ops,
+	.nr_clks = ARRAY_SIZE(exynos990_acpm_clks),
 	.mbox_chan_id = 0,
 };
 
@@ -100,22 +190,21 @@ static const struct clk_ops acpm_clk_ops = {
 };
 
 static int acpm_clk_register(struct device *dev, struct acpm_clk *aclk,
-			     const char *name)
+			     struct clk_init_data *init)
 {
-	struct clk_init_data init = {};
-
-	init.name = name;
-	init.ops = &acpm_clk_ops;
-	aclk->hw.init = &init;
+	aclk->hw.init = init;
 
 	return devm_clk_hw_register(dev, &aclk->hw);
 }
 
 static int acpm_clk_probe(struct platform_device *pdev)
 {
+	const struct acpm_clk_driver_data *drv_data;
+	const struct platform_device_id *id;
 	struct acpm_handle *acpm_handle;
 	struct clk_hw_onecell_data *clk_data;
 	struct clk_hw **hws;
+	struct clk_init_data init = {};
 	struct device *dev = &pdev->dev;
 	struct acpm_clk *aclks;
 	unsigned int mbox_chan_id;
@@ -126,8 +215,14 @@ static int acpm_clk_probe(struct platform_device *pdev)
 		return dev_err_probe(dev, PTR_ERR(acpm_handle),
 				     "Failed to get acpm handle\n");
 
-	count = acpm_clk_gs101.nr_clks;
-	mbox_chan_id = acpm_clk_gs101.mbox_chan_id;
+	id = platform_get_device_id(pdev);
+	if (!id || !id->driver_data)
+		return -ENODEV;
+
+	drv_data  = (const struct acpm_clk_driver_data *)id->driver_data;
+
+	count = drv_data->nr_clks;
+	mbox_chan_id = drv_data->mbox_chan_id;
 
 	clk_data = devm_kzalloc(dev, struct_size(clk_data, hws, count),
 				GFP_KERNEL);
@@ -154,8 +249,9 @@ static int acpm_clk_probe(struct platform_device *pdev)
 
 		hws[i] = &aclk->hw;
 
-		err = acpm_clk_register(dev, aclk,
-					acpm_clk_gs101.clks[i].name);
+		init.name = drv_data->clks[i].name;
+		init.ops = drv_data->clk_ops ?: &acpm_clk_ops;
+		err = acpm_clk_register(dev, aclk, &init);
 		if (err)
 			return dev_err_probe(dev, err,
 					     "Failed to register clock\n");
@@ -166,7 +262,9 @@ static int acpm_clk_probe(struct platform_device *pdev)
 }
 
 static const struct platform_device_id acpm_clk_id[] = {
-	{ "gs101-acpm-clk" },
+	{ "gs101-acpm-clk", (kernel_ulong_t)&acpm_clk_gs101 },
+	{ "exynos9820-acpm-clk", (kernel_ulong_t)&acpm_clk_exynos9820 },
+	{ "exynos990-acpm-clk", (kernel_ulong_t)&acpm_clk_exynos990 },
 	{}
 };
 MODULE_DEVICE_TABLE(platform, acpm_clk_id);

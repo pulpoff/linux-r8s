@@ -1,0 +1,27 @@
+/* SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause) */
+/*
+ * Device Tree binding constants for the Samsung Exynos 990 ACPM clock controller: the DVFS domains of the APM
+ * firmware, in its order (acpm_dvfs_id in the vendor's acpm_dvfs_exynos9830.h).
+ */
+
+#ifndef _DT_BINDINGS_CLOCK_SAMSUNG_EXYNOS990_ACPM_H
+#define _DT_BINDINGS_CLOCK_SAMSUNG_EXYNOS990_ACPM_H
+
+#define EXYNOS990_CLK_ACPM_DVFS_MIF		0
+#define EXYNOS990_CLK_ACPM_DVFS_INT		1
+#define EXYNOS990_CLK_ACPM_DVFS_CPUCL0		2
+#define EXYNOS990_CLK_ACPM_DVFS_CPUCL1		3
+#define EXYNOS990_CLK_ACPM_DVFS_CPUCL2		4
+#define EXYNOS990_CLK_ACPM_DVFS_NPU		5
+#define EXYNOS990_CLK_ACPM_DVFS_DISP		6
+#define EXYNOS990_CLK_ACPM_DVFS_DSP		7
+#define EXYNOS990_CLK_ACPM_DVFS_AUD		8
+#define EXYNOS990_CLK_ACPM_DVS_CP		9
+#define EXYNOS990_CLK_ACPM_DVFS_G3D		10
+#define EXYNOS990_CLK_ACPM_DVFS_INTCAM		11
+#define EXYNOS990_CLK_ACPM_DVFS_CAM		12
+#define EXYNOS990_CLK_ACPM_DVFS_TNR		13
+#define EXYNOS990_CLK_ACPM_DVFS_DNC		14
+#define EXYNOS990_CLK_ACPM_DVFS_MFC		15
+
+#endif /* _DT_BINDINGS_CLOCK_SAMSUNG_EXYNOS990_ACPM_H */
