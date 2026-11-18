@@ -1111,8 +1111,13 @@ static const struct samsung_gate_clock top_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_CMU_HSI1_UFS_EMBD, "gout_cmu_hsi1_ufs_embd",
 	     "mout_cmu_hsi1_ufs_embd", CLK_CON_GAT_GATE_CLKCMU_HSI1_UFS_EMBD,
 	     21, 0, 0),
+	/*
+	 * HSI2's bus clock: nothing in HSI2 (its CMU, sysreg, the GEN4 PCIe)
+	 * answers without it and no driver holds it, so a consumer's disable
+	 * must not gate it (any HSI2 access then stalls the system).
+	 */
 	GATE(CLK_GOUT_CMU_HSI2_BUS, "gout_cmu_hsi2_bus", "mout_cmu_hsi2_bus",
-	     CLK_CON_GAT_GATE_CLKCMU_HSI2_BUS, 21, 0, 0),
+	     CLK_CON_GAT_GATE_CLKCMU_HSI2_BUS, 21, CLK_IS_CRITICAL, 0),
 	GATE(CLK_GOUT_CMU_HSI2_PCIE, "gout_cmu_hsi2_pcie",
 	     "mout_cmu_hsi2_pcie", CLK_CON_GAT_GATE_CLKCMU_HSI2_PCIE,
 	     21, 0, 0),
@@ -2324,10 +2329,11 @@ static const struct samsung_gate_clock peric1_gate_clks[] __initconst = {
 	     "dout_peric1_usi_i2c",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_PERIC1_TOP1_IPCLKPORT_IPCLK_5,
 	     21, 0, 0),
+	/* USI16 (the modem's boot SPI) sets its rate through this gate */
 	GATE(CLK_GOUT_PERIC1_TOP1_IPCLK_6, "gout_peric1_top1_ipclk_6",
 	     "dout_peric1_usi16_usi",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_PERIC1_TOP1_IPCLKPORT_IPCLK_6,
-	     21, 0, 0),
+	     21, CLK_SET_RATE_PARENT, 0),
 	GATE(CLK_GOUT_PERIC1_TOP1_IPCLK_7, "gout_peric1_top1_ipclk_7",
 	     "dout_peric1_usi_i2c",
 	     CLK_CON_GAT_GOUT_BLK_PERIC1_UID_PERIC1_TOP1_IPCLKPORT_IPCLK_7,
