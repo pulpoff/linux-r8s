@@ -70,11 +70,18 @@
 			};
 		};
 
+		/*
+		 * capacity-dmips-mhz and dynamic-power-coefficient: the vendor
+		 * firmware's sched-energy-data (mips-per-mhz, power-coefficient)
+		 * for ananke (A55), enyo (A76) and lion (M5).
+		 */
 		cpu0: cpu@0 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a55";
 			reg = <0x0>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <270>;
+			dynamic-power-coefficient = <120>;
 		};
 
 		cpu1: cpu@1 {
@@ -82,6 +89,8 @@
 			compatible = "arm,cortex-a55";
 			reg = <0x1>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <270>;
+			dynamic-power-coefficient = <120>;
 		};
 
 		cpu2: cpu@2 {
@@ -89,6 +98,8 @@
 			compatible = "arm,cortex-a55";
 			reg = <0x2>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <270>;
+			dynamic-power-coefficient = <120>;
 		};
 
 		cpu3: cpu@3 {
@@ -96,6 +107,8 @@
 			compatible = "arm,cortex-a55";
 			reg = <0x3>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <270>;
+			dynamic-power-coefficient = <120>;
 		};
 
 		cpu4: cpu@100 {
@@ -103,6 +116,8 @@
 			compatible = "arm,cortex-a76";
 			reg = <0x4>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <673>;
+			dynamic-power-coefficient = <370>;
 		};
 
 		cpu5: cpu@101 {
@@ -110,6 +125,8 @@
 			compatible = "arm,cortex-a76";
 			reg = <0x5>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <673>;
+			dynamic-power-coefficient = <370>;
 		};
 
 		cpu6: cpu@200 {
@@ -117,6 +134,8 @@
 			compatible = "samsung,mongoose-m5";
 			reg = <0x6>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <806>;
+			dynamic-power-coefficient = <860>;
 		};
 
 		cpu7: cpu@201 {
@@ -124,6 +143,8 @@
 			compatible = "samsung,mongoose-m5";
 			reg = <0x7>;
 			enable-method = "psci";
+			capacity-dmips-mhz = <806>;
+			dynamic-power-coefficient = <860>;
 		};
 	};
 
