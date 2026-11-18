@@ -128,6 +128,8 @@ struct decon_kms {
 	 * shadow update cannot latch: nothing waits for one then.
 	 */
 	bool active;
+	/* S-Boot leaves the panel awake; a kernel that kexec'd us may have put it to sleep */
+	bool panel_te;
 
 	/* PSR: which frames the TE trigger still has to start (trig_lock) */
 	spinlock_t trig_lock;
@@ -439,7 +441,8 @@ static const struct drm_driver decon_driver = {
  * out; the counters are read again 50 ms on, to show whether the panel still sends TE and DECON still starts
  * frames. DSIM's FIFO ports are skipped: reading RXFIFO pops it.
  */
-static void decon_print_regs(struct decon_kms *dk, struct drm_printer *p, const char *why)
+/* Return: how many TE pulses came in the 50 ms the dump waits */
+static u32 decon_print_regs(struct decon_kms *dk, struct drm_printer *p, const char *why)
 {
 	static const struct {
 		const char *name;
@@ -451,7 +454,7 @@ static void decon_print_regs(struct decon_kms *dk, struct drm_printer *p, const 
 		{ "dsim", true, 0x0000, 0x0100 },
 	};
 	unsigned int b, i;
-	u32 te, frames, off, v[8];
+	u32 te, te_after, frames, off, v[8];
 
 	for (b = 0; b < ARRAY_SIZE(blocks); b++) {
 		void __iomem *base = blocks[b].dsim ? dk->dsim : dk->decon;
@@ -479,8 +482,10 @@ static void decon_print_regs(struct decon_kms *dk, struct drm_printer *p, const 
 	te = readl(dk->decon + DECON_HW_TE_CNT);
 	frames = readl(dk->decon + DECON_FRAME_COUNT);
 	msleep(50);
-	drm_printf(p, "%sTE %08x -> %08x, frames %08x -> %08x in 50 ms\n", why, te,
-		   readl(dk->decon + DECON_HW_TE_CNT), frames, readl(dk->decon + DECON_FRAME_COUNT));
+	te_after = readl(dk->decon + DECON_HW_TE_CNT);
+	drm_printf(p, "%sTE %08x -> %08x, frames %08x -> %08x in 50 ms\n", why, te, te_after,
+		   frames, readl(dk->decon + DECON_FRAME_COUNT));
+	return te_after - te;
 }
 
 static int decon_regs_show(struct seq_file *m, void *data)
@@ -499,7 +504,7 @@ static int decon_check_handover(struct decon_kms *dk, struct device *dev)
 	u32 ctrl, trig, path0, path1;
 	unsigned int w, nwin = 0;
 
-	decon_print_regs(dk, &p, "handover: ");
+	dk->panel_te = decon_print_regs(dk, &p, "handover: ") != 0;
 	decon_check_errors(dk, "at the handover");
 	ctrl = readl(dk->decon + DECON_GLOBAL_CONTROL);
 	trig = readl(dk->decon + DECON_HW_SW_TRIG_CONTROL);
@@ -594,6 +599,19 @@ unsigned int exynos990_decon_hold_frames(struct mipi_dsi_host *host, bool hold)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(exynos990_decon_hold_frames);
+
+/**
+ * exynos990_decon_panel_awake - whether the panel was sending TE at the handover
+ * @host: the panel's DSI host
+ *
+ * S-Boot leaves the panel awake and scanning out; a kernel that kexec'd this one may have put it to sleep on its
+ * way down, and then no TE comes until the panel is woken up.
+ */
+bool exynos990_decon_panel_awake(struct mipi_dsi_host *host)
+{
+	return container_of(host, struct decon_kms, dsi_host)->panel_te;
+}
+EXPORT_SYMBOL_GPL(exynos990_decon_panel_awake);
 
 static int dsim_wait_clear(struct decon_kms *dk, u32 bits)
 {

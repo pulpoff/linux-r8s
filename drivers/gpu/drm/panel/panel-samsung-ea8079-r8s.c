@@ -38,7 +38,7 @@ struct r8s_panel {
 	struct mipi_dsi_device *dsi;
 	struct backlight_device *bl;
 	struct mutex lock;	/* the command sequences against the backlight */
-	bool asleep;		/* SLEEP_IN sent; the bootloader leaves it awake */
+	bool asleep;		/* SLEEP_IN sent: by us, or by a kernel that kexec'd us (S-Boot leaves it awake) */
 	bool display_on;
 };
 
@@ -306,7 +306,10 @@ static int r8s_probe(struct mipi_dsi_device *dsi)
 		return PTR_ERR(rp);
 
 	rp->dsi = dsi;
-	rp->display_on = true;
+	rp->asleep = !exynos990_decon_panel_awake(dsi->host);
+	rp->display_on = !rp->asleep;
+	if (rp->asleep)
+		dev_info(dev, "no TE at the handover: asleep, woken at the first enable\n");
 	ret = devm_mutex_init(dev, &rp->lock);
 	if (ret)
 		return ret;

@@ -8,5 +8,6 @@
 struct mipi_dsi_host;
 
 unsigned int exynos990_decon_hold_frames(struct mipi_dsi_host *host, bool hold);
+bool exynos990_decon_panel_awake(struct mipi_dsi_host *host);
 
 #endif
