@@ -3,8 +3,8 @@ Linux 7.2.15 for the Samsung Galaxy S20 FE (r8s, SM-G780F)
 
 Mainline Linux for the Samsung Galaxy S20 FE 4G (SM-G780F, codename r8s, Exynos 990), the kernel
 of the phone's [VibeOS](https://vibeos.top) port. The phone boots Debian from its own storage
-on all 8 cores, charges, and drives its panel and GPU: GNOME runs on it. Touch, the radios and
-sound are not done yet.
+on all 8 cores, charges, and drives its panel, touchscreen and GPU: GNOME runs on it. The radios
+and sound are not done yet.
 
 The tree is stable **v7.2.15** plus the S20 FE changes below, each its own commit on `main`; new
 work is pushed as it lands. 7.2 is end of life on kernel.org and this tree stays on 7.2.15.
@@ -17,6 +17,7 @@ What works
 | Boot | from the BOOT partition through a small stub and U-Boot; test kernels are started from there with kexec, under the SoC watchdog |
 | Display | DRM/KMS on the pipeline the bootloader leaves running (DECON0, IDMA channel 0, DSIM0, EA8079 at 1080x2400 and 120 Hz in command mode with DSC): page flips at frame start, vblank events, fbcon. Frames go to the panel only when the picture changes; the panel refreshes itself in between |
 | Panel | the EA8079 as a DSI device of DECON0: brightness (256 steps, a backlight device), and screen off and on through sleep mode with the vendor init sequence on wake (off 235 ms, on 210 ms) |
+| Touchscreen | Zinitix ZT7650 on I2C, 1080x2400, through a new driver: taps and swipes drive GNOME (the quick settings and their brightness slider, the edge swipes). Several fingers at once and palm rejection are not checked yet |
 | GPU | Mali-G77 MP11 (GPU_ID 0x90800011) through Panfrost, with its power domain (the secure monitor restores its TZPC after each power-up) and its clock from the APM firmware (156 to 455 MHz, devfreq). Jobs run: an offscreen GLES2 test renders the same pixels as llvmpipe. Mesa 26.2 does not know the G77, so userspace is given it as the G57, the Valhall with the same architecture: GNOME Shell draws on it (OpenGL ES; Mesa's Vulkan driver does not cover this Valhall generation) |
 | Temperatures | the six SoC sensors (big, middle and little cores, GPU, ISP, NPU) through the APM firmware, as thermal zones and hwmon devices. Each zone shuts the phone down at 110 C; the GPU is slowed down from 88 C. The CPUs have no cooling yet (no cpufreq) |
 | Power firmware | ACPM, the APM firmware's IPC (mailbox and SRAM channels): DVFS rates for the GPU; it sets the voltage with each rate |
@@ -33,8 +34,7 @@ What works
 Not yet
 =======
 
-Touchscreen (the ZT7650 driver probes and the controller raises interrupts; finger reports are
-not checked yet), Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, cpufreq
+Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, cpufreq
 (and with it CPU cooling), CPU idle states and suspend.
 
 Changes on top of 7.2.15
