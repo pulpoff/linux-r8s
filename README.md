@@ -21,6 +21,7 @@ What works
 | GPU | Mali-G77 MP11 (GPU_ID 0x90800011) through Panfrost, with its power domain (the secure monitor restores its TZPC after each power-up) and its clock from the APM firmware (the stock kernel's 156 to 800 MHz, devfreq). Jobs run: an offscreen GLES2 test renders the same pixels as llvmpipe. Mesa 26.2 does not know the G77, so userspace is given it as the G57, the Valhall with the same architecture: GNOME Shell draws on it (OpenGL ES; Mesa's Vulkan driver does not cover this Valhall generation) |
 | Temperatures | the six SoC sensors (big, middle and little cores, GPU, ISP, NPU) through the APM firmware, as thermal zones and hwmon devices. Each zone shuts the phone down at 110 C; the CPU clusters and the GPU slow down from 75 C (the GPU from 80 C) in rungs: full load on both M5s holds at 80 to 84 C |
 | Power firmware | ACPM, the APM firmware's IPC (mailbox and SRAM channels): DVFS rates for the GPU; it sets the voltage with each rate |
+| PMIC | the S2MPS19 through the APM firmware: its 12 bucks and 27 LDOs as regulators (read and named; the kernel switches none of them yet), its interrupt, and its RTC, which sets the clock at boot and raises alarms |
 | USB | device mode (dwc3): USB networking, ssh |
 | Storage | UFS 3.1: new Exynos 990 host variant and UFS PHY, HS-G4 x2 (about 1.1 GB/s reads); Debian boots from its own partition |
 | RAM | all 6 GB the bootloader hands over (about 5.3 GB usable after the firmware's carve-outs); the stock carve-outs are reserved |
