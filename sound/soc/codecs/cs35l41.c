@@ -778,12 +778,18 @@ static int cs35l41_pcm_hw_params(struct snd_pcm_substream *substream,
 			   cs35l41_fs_rates[i].fs_cfg << CS35L41_GLOBAL_FS_SHIFT);
 
 	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+		/*
+		 * The slot is the physical width; the amp keeps at most the
+		 * top 24 bits of it (S32_LE from a 32-bit TDM host).
+		 */
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_FORMAT,
 				   CS35L41_ASP_WIDTH_RX_MASK,
-				   asp_wl << CS35L41_ASP_WIDTH_RX_SHIFT);
+				   params_physical_width(params) <<
+				   CS35L41_ASP_WIDTH_RX_SHIFT);
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_RX_WL,
 				   CS35L41_ASP_RX_WL_MASK,
-				   asp_wl << CS35L41_ASP_RX_WL_SHIFT);
+				   min_t(unsigned int, asp_wl, 24) <<
+				   CS35L41_ASP_RX_WL_SHIFT);
 	} else {
 		regmap_update_bits(cs35l41->regmap, CS35L41_SP_FORMAT,
 				   CS35L41_ASP_WIDTH_TX_MASK,
