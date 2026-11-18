@@ -9,6 +9,7 @@
 // conjunction with runtime-pm. Support for both device-tree and non-device-tree
 // based power domain support is included.
 
+#include <linux/arm-smccc.h>
 #include <linux/io.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
@@ -31,7 +32,46 @@ struct exynos_pm_domain {
 	void __iomem *base;
 	struct generic_pm_domain pd;
 	u32 local_pwr_cfg;
+	u32 tzpc_base;
 };
+
+/*
+ * Some Exynos9820 domains (AUD, G3D, ...) have their TZPC registers reset
+ * to secure-only when the domain powers down. The secure monitor saves and
+ * restores them on request; without the restore, the first non-secure access
+ * to the block faults.
+ */
+#define EXYNOS_SMC_PREPARE_PD_ONOFF	0x82000410
+#define EXYNOS_PD_TZPC_SAVE		0
+#define EXYNOS_PD_TZPC_RESTORE		1
+#define EXYNOS_PD_TZPC_GROUP		2
+
+/* bring-up switch: lets the power-on be tested with and without the SMC */
+static bool tzpc_smc = true;
+module_param(tzpc_smc, bool, 0644);
+
+static int exynos_pd_tzpc(struct exynos_pm_domain *pd, unsigned long mode)
+{
+	struct arm_smccc_res res;
+
+	if (!tzpc_smc) {
+		pr_info("Power domain %s: TZPC SMC skipped\n", pd->pd.name);
+		return 0;
+	}
+
+	pr_info("Power domain %s: TZPC %s SMC\n", pd->pd.name,
+		mode == EXYNOS_PD_TZPC_SAVE ? "save" : "restore");
+	arm_smccc_smc(EXYNOS_SMC_PREPARE_PD_ONOFF, mode, pd->tzpc_base,
+		      EXYNOS_PD_TZPC_GROUP, 0, 0, 0, 0, &res);
+	if (res.a0) {
+		pr_err("Power domain %s TZPC %s failed: %ld\n", pd->pd.name,
+		       mode == EXYNOS_PD_TZPC_SAVE ? "save" : "restore",
+		       (long)res.a0);
+		return -EIO;
+	}
+
+	return 0;
+}
 
 static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 {
@@ -43,11 +83,18 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 	pd = container_of(domain, struct exynos_pm_domain, pd);
 	base = pd->base;
 
+	if (!power_on && pd->tzpc_base) {
+		int ret = exynos_pd_tzpc(pd, EXYNOS_PD_TZPC_SAVE);
+
+		if (ret)
+			return ret;
+	}
+
 	pwr = power_on ? pd->local_pwr_cfg : 0;
 	writel_relaxed(pwr, base);
 
-	/* Wait max 1ms */
-	timeout = 10;
+	/* Wait max 1ms, 20ms on 9820: AUD can take longer to power down */
+	timeout = pd->local_pwr_cfg == 0x1 ? 200 : 10;
 
 	while ((readl_relaxed(base + 0x4) & pd->local_pwr_cfg) != pwr) {
 		if (!timeout) {
@@ -59,6 +106,9 @@ static int exynos_pd_power(struct generic_pm_domain *domain, bool power_on)
 		cpu_relax();
 		usleep_range(80, 100);
 	}
+
+	if (power_on && pd->tzpc_base)
+		return exynos_pd_tzpc(pd, EXYNOS_PD_TZPC_RESTORE);
 
 	return 0;
 }
@@ -81,6 +131,10 @@ static const struct exynos_pm_domain_config exynos5433_cfg = {
 	.local_pwr_cfg		= 0xf,
 };
 
+static const struct exynos_pm_domain_config exynos9820_cfg = {
+	.local_pwr_cfg		= 0x1,
+};
+
 static const struct of_device_id exynos_pm_domain_of_match[] = {
 	{
 		.compatible = "samsung,exynos4210-pd",
@@ -88,6 +142,13 @@ static const struct of_device_id exynos_pm_domain_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos5433-pd",
 		.data = &exynos5433_cfg,
+	}, {
+		.compatible = "samsung,exynos9820-pd",
+		.data = &exynos9820_cfg,
+	}, {
+		/* as on the 9820: one power bit, and the G3D's TZPC is restored by the secure monitor */
+		.compatible = "samsung,exynos990-pd",
+		.data = &exynos9820_cfg,
 	},
 	{ },
 };
@@ -127,6 +188,7 @@ static int exynos_pd_probe(struct platform_device *pdev)
 	pd->pd.power_off = exynos_pd_power_off;
 	pd->pd.power_on = exynos_pd_power_on;
 	pd->local_pwr_cfg = pm_domain_cfg->local_pwr_cfg;
+	of_property_read_u32(np, "samsung,tzpc-base", &pd->tzpc_base);
 
 	/*
 	 * Some Samsung platforms with bootloaders turning on the splash-screen
