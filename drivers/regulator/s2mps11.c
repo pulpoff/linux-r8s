@@ -1840,6 +1840,8 @@ static const struct regulator_desc s2mps19_regulators[] = {
 	regulator_desc_s2mps19_ldo(10, MIN_700_MV, STEP_12_5_MV),
 	regulator_desc_s2mps19_ldo(11, MIN_700_MV, STEP_25_MV),
 	regulator_desc_s2mps19_ldo(12, MIN_1800_MV, STEP_25_MV),
+	regulator_desc_s2mps19_ldo(13, MIN_1800_MV, STEP_25_MV),
+	regulator_desc_s2mps19_ldo(14, MIN_1800_MV, STEP_25_MV),
 	regulator_desc_s2mps19_ldo(15, MIN_1800_MV, STEP_25_MV),
 	regulator_desc_s2mps19_ldo(16, MIN_1800_MV, STEP_25_MV),
 	regulator_desc_s2mps19_ldo(17, MIN_700_MV, STEP_25_MV),
