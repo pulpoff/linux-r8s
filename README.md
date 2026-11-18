@@ -23,6 +23,7 @@ What works
 | Watchdog | the SoC watchdog keeps running across kexec, so a hung test kernel resets the phone; the kernel log of a panic survives in pstore (ramoops at the stock address) |
 | Reboot | into recovery through the PMU's reboot-reason register (download and bootloader mode are in the DT, untested) |
 | Keys | the power key (the volume keys are in the DT, untested) |
+| CPUs | all 8 cores (4 Cortex-A55, 2 Cortex-A76, 2 Mongoose M5) through PSCI, with the PMU power-down handshake of the stock kernel: CPU hotplug works, and a kernel started with kexec gets every core. No cpufreq or idle states yet: the cores run at the clocks the bootloader sets |
 | Scheduling | the scheduler knows the three core types (capacities from the stock firmware); HZ=1000, full preemption, schedutil, BFQ, MGLRU |
 
 Not yet
