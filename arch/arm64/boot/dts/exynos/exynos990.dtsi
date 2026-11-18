@@ -84,6 +84,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <270>;
 			dynamic-power-coefficient = <120>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL0>;
+			operating-points-v2 = <&cpu_cl0_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu1: cpu@1 {
@@ -93,6 +96,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <270>;
 			dynamic-power-coefficient = <120>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL0>;
+			operating-points-v2 = <&cpu_cl0_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu2: cpu@2 {
@@ -102,6 +108,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <270>;
 			dynamic-power-coefficient = <120>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL0>;
+			operating-points-v2 = <&cpu_cl0_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu3: cpu@3 {
@@ -111,6 +120,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <270>;
 			dynamic-power-coefficient = <120>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL0>;
+			operating-points-v2 = <&cpu_cl0_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu4: cpu@100 {
@@ -120,6 +132,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <673>;
 			dynamic-power-coefficient = <370>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL1>;
+			operating-points-v2 = <&cpu_cl1_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu5: cpu@101 {
@@ -129,6 +144,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <673>;
 			dynamic-power-coefficient = <370>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL1>;
+			operating-points-v2 = <&cpu_cl1_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu6: cpu@200 {
@@ -138,6 +156,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <806>;
 			dynamic-power-coefficient = <860>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL2>;
+			operating-points-v2 = <&cpu_cl2_opp_table>;
+			#cooling-cells = <2>;
 		};
 
 		cpu7: cpu@201 {
@@ -147,6 +168,9 @@
 			enable-method = "psci";
 			capacity-dmips-mhz = <806>;
 			dynamic-power-coefficient = <860>;
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL2>;
+			operating-points-v2 = <&cpu_cl2_opp_table>;
+			#cooling-cells = <2>;
 		};
 	};
 
@@ -178,26 +202,293 @@
 			mboxes = <&ap2apm_mailbox>;
 			shmem = <&apm_sram>;
 
-			assigned-clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_G3D>;
-			assigned-clock-rates = <156000000>;
+			/*
+			 * A rate is known only once set: the CPU clusters start at their top level (the M5s at the stock
+			 * kernel's boot level), the GPU at its lowest, until cpufreq and devfreq take over.
+			 */
+			assigned-clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL0>,
+					  <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL1>,
+					  <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CPUCL2>,
+					  <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_G3D>;
+			assigned-clock-rates = <2002000000>, <2504000000>, <2002000000>, <156000000>;
 		};
 	};
 
+	/*
+	 * The CPU clusters' levels from the bootloader's ECT, within the stock kernel's limits (the A76s at their
+	 * advertised 2.5 GHz, not the 2.6 GHz the stock limit allows); ACPM picks each level's voltage.
+	 */
+	cpu_cl0_opp_table: opp-table-cpu-cl0 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-442000000 {
+			opp-hz = /bits/ 64 <442000000>;
+		};
+
+		opp-546000000 {
+			opp-hz = /bits/ 64 <546000000>;
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+		};
+
+		opp-806000000 {
+			opp-hz = /bits/ 64 <806000000>;
+		};
+
+		opp-949000000 {
+			opp-hz = /bits/ 64 <949000000>;
+		};
+
+		opp-1053000000 {
+			opp-hz = /bits/ 64 <1053000000>;
+		};
+
+		opp-1157000000 {
+			opp-hz = /bits/ 64 <1157000000>;
+		};
+
+		opp-1300000000 {
+			opp-hz = /bits/ 64 <1300000000>;
+		};
+
+		opp-1456000000 {
+			opp-hz = /bits/ 64 <1456000000>;
+		};
+
+		opp-1586000000 {
+			opp-hz = /bits/ 64 <1586000000>;
+		};
+
+		opp-1742000000 {
+			opp-hz = /bits/ 64 <1742000000>;
+		};
+
+		opp-1846000000 {
+			opp-hz = /bits/ 64 <1846000000>;
+		};
+
+		opp-1950000000 {
+			opp-hz = /bits/ 64 <1950000000>;
+		};
+
+		opp-2002000000 {
+			opp-hz = /bits/ 64 <2002000000>;
+		};
+	};
+
+	/* Cortex-A76 */
+	cpu_cl1_opp_table: opp-table-cpu-cl1 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-507000000 {
+			opp-hz = /bits/ 64 <507000000>;
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+		};
+
+		opp-754000000 {
+			opp-hz = /bits/ 64 <754000000>;
+		};
+
+		opp-845000000 {
+			opp-hz = /bits/ 64 <845000000>;
+		};
+
+		opp-962000000 {
+			opp-hz = /bits/ 64 <962000000>;
+		};
+
+		opp-1066000000 {
+			opp-hz = /bits/ 64 <1066000000>;
+		};
+
+		opp-1222000000 {
+			opp-hz = /bits/ 64 <1222000000>;
+		};
+
+		opp-1404000000 {
+			opp-hz = /bits/ 64 <1404000000>;
+		};
+
+		opp-1508000000 {
+			opp-hz = /bits/ 64 <1508000000>;
+		};
+
+		opp-1586000000 {
+			opp-hz = /bits/ 64 <1586000000>;
+		};
+
+		opp-1690000000 {
+			opp-hz = /bits/ 64 <1690000000>;
+		};
+
+		opp-1794000000 {
+			opp-hz = /bits/ 64 <1794000000>;
+		};
+
+		opp-1898000000 {
+			opp-hz = /bits/ 64 <1898000000>;
+		};
+
+		opp-2002000000 {
+			opp-hz = /bits/ 64 <2002000000>;
+		};
+
+		opp-2106000000 {
+			opp-hz = /bits/ 64 <2106000000>;
+		};
+
+		opp-2210000000 {
+			opp-hz = /bits/ 64 <2210000000>;
+		};
+
+		opp-2314000000 {
+			opp-hz = /bits/ 64 <2314000000>;
+		};
+
+		opp-2400000000 {
+			opp-hz = /bits/ 64 <2400000000>;
+		};
+
+		opp-2504000000 {
+			opp-hz = /bits/ 64 <2504000000>;
+		};
+	};
+
+	/* Mongoose M5 */
+	cpu_cl2_opp_table: opp-table-cpu-cl2 {
+		compatible = "operating-points-v2";
+		opp-shared;
+
+		opp-546000000 {
+			opp-hz = /bits/ 64 <546000000>;
+		};
+
+		opp-650000000 {
+			opp-hz = /bits/ 64 <650000000>;
+		};
+
+		opp-754000000 {
+			opp-hz = /bits/ 64 <754000000>;
+		};
+
+		opp-858000000 {
+			opp-hz = /bits/ 64 <858000000>;
+		};
+
+		opp-962000000 {
+			opp-hz = /bits/ 64 <962000000>;
+		};
+
+		opp-1066000000 {
+			opp-hz = /bits/ 64 <1066000000>;
+		};
+
+		opp-1170000000 {
+			opp-hz = /bits/ 64 <1170000000>;
+		};
+
+		opp-1274000000 {
+			opp-hz = /bits/ 64 <1274000000>;
+		};
+
+		opp-1378000000 {
+			opp-hz = /bits/ 64 <1378000000>;
+		};
+
+		opp-1482000000 {
+			opp-hz = /bits/ 64 <1482000000>;
+		};
+
+		opp-1586000000 {
+			opp-hz = /bits/ 64 <1586000000>;
+		};
+
+		opp-1690000000 {
+			opp-hz = /bits/ 64 <1690000000>;
+		};
+
+		opp-1794000000 {
+			opp-hz = /bits/ 64 <1794000000>;
+		};
+
+		opp-1898000000 {
+			opp-hz = /bits/ 64 <1898000000>;
+		};
+
+		opp-2002000000 {
+			opp-hz = /bits/ 64 <2002000000>;
+		};
+
+		opp-2106000000 {
+			opp-hz = /bits/ 64 <2106000000>;
+		};
+
+		opp-2210000000 {
+			opp-hz = /bits/ 64 <2210000000>;
+		};
+
+		opp-2314000000 {
+			opp-hz = /bits/ 64 <2314000000>;
+		};
+
+		opp-2418000000 {
+			opp-hz = /bits/ 64 <2418000000>;
+		};
+
+		opp-2522000000 {
+			opp-hz = /bits/ 64 <2522000000>;
+		};
+
+		opp-2626000000 {
+			opp-hz = /bits/ 64 <2626000000>;
+		};
+
+		opp-2730000000 {
+			opp-hz = /bits/ 64 <2730000000>;
+		};
+	};
+
+	/* the stock kernel's eight G3D levels (455 MHz is its sustainable one); ACPM picks the voltage */
 	gpu_opp_table: opp-table-gpu {
 		compatible = "operating-points-v2";
 
-		/* the vendor's G3D levels up to its sustainable one; ACPM picks the voltage */
 		opp-156000000 {
 			opp-hz = /bits/ 64 <156000000>;
 		};
+
 		opp-260000000 {
 			opp-hz = /bits/ 64 <260000000>;
 		};
+
 		opp-377000000 {
 			opp-hz = /bits/ 64 <377000000>;
 		};
+
 		opp-455000000 {
 			opp-hz = /bits/ 64 <455000000>;
+		};
+
+		opp-507000000 {
+			opp-hz = /bits/ 64 <507000000>;
+		};
+
+		opp-598000000 {
+			opp-hz = /bits/ 64 <598000000>;
+		};
+
+		opp-702000000 {
+			opp-hz = /bits/ 64 <702000000>;
+		};
+
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
 		};
 	};
 
@@ -637,48 +928,248 @@
 	};
 
 	/*
-	 * Critical at 110 C, below the 115 C at which the stock kernel's zones are "hot". No CPU cooling yet: the
-	 * cores run at the clocks the bootloader set.
+	 * Each CPU and GPU zone is a ladder of passive trips: crossing one puts its cooling device at once at least
+	 * at that rung's lowest state, and step_wise steps further within the rung while the temperature rises. A
+	 * single trip is not enough: the sensors read whole degrees, and step_wise holds its state while a reading
+	 * stays the same, however hot (the M5s reached 97 C at boot with one step taken). The CPU zones are read
+	 * every 250 ms even when cool: two M5s at full speed warm their zone by 50 C within a second. Critical at
+	 * 110 C, below the 115 C at which the stock kernel's zones are "hot".
 	 */
 	thermal-zones {
 		cpu-big-thermal {
 			polling-delay-passive = <100>;
-			polling-delay = <1000>;
+			polling-delay = <250>;
 			thermal-sensors = <&tmu 0>;
 
 			trips {
+				cpu_big_75: cpu-big-75 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_big_80: cpu-big-80 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_big_85: cpu-big-85 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_big_90: cpu-big-90 {
+					temperature = <90000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_big_95: cpu-big-95 {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
 				cpu-big-critical {
 					temperature = <110000>;
 					hysteresis = <0>;
 					type = "critical";
 				};
 			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_big_75>;
+					cooling-device = <&cpu6 0 3>,
+							 <&cpu7 0 3>;
+				};
+
+				map1 {
+					trip = <&cpu_big_80>;
+					cooling-device = <&cpu6 3 7>,
+							 <&cpu7 3 7>;
+				};
+
+				map2 {
+					trip = <&cpu_big_85>;
+					cooling-device = <&cpu6 7 11>,
+							 <&cpu7 7 11>;
+				};
+
+				map3 {
+					trip = <&cpu_big_90>;
+					cooling-device = <&cpu6 11 15>,
+							 <&cpu7 11 15>;
+				};
+
+				map4 {
+					trip = <&cpu_big_95>;
+					cooling-device = <&cpu6 15 21>,
+							 <&cpu7 15 21>;
+				};
+			};
 		};
 
 		cpu-mid-thermal {
 			polling-delay-passive = <100>;
-			polling-delay = <1000>;
+			polling-delay = <250>;
 			thermal-sensors = <&tmu 1>;
 
 			trips {
+				cpu_mid_75: cpu-mid-75 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_mid_80: cpu-mid-80 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_mid_85: cpu-mid-85 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_mid_90: cpu-mid-90 {
+					temperature = <90000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_mid_95: cpu-mid-95 {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
 				cpu-mid-critical {
 					temperature = <110000>;
 					hysteresis = <0>;
 					type = "critical";
 				};
 			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_mid_75>;
+					cooling-device = <&cpu4 0 3>,
+							 <&cpu5 0 3>;
+				};
+
+				map1 {
+					trip = <&cpu_mid_80>;
+					cooling-device = <&cpu4 3 6>,
+							 <&cpu5 3 6>;
+				};
+
+				map2 {
+					trip = <&cpu_mid_85>;
+					cooling-device = <&cpu4 6 9>,
+							 <&cpu5 6 9>;
+				};
+
+				map3 {
+					trip = <&cpu_mid_90>;
+					cooling-device = <&cpu4 9 13>,
+							 <&cpu5 9 13>;
+				};
+
+				map4 {
+					trip = <&cpu_mid_95>;
+					cooling-device = <&cpu4 13 18>,
+							 <&cpu5 13 18>;
+				};
+			};
 		};
 
 		cpu-little-thermal {
 			polling-delay-passive = <100>;
-			polling-delay = <1000>;
+			polling-delay = <250>;
 			thermal-sensors = <&tmu 2>;
 
 			trips {
+				cpu_little_75: cpu-little-75 {
+					temperature = <75000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little_80: cpu-little-80 {
+					temperature = <80000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little_85: cpu-little-85 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little_90: cpu-little-90 {
+					temperature = <90000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				cpu_little_95: cpu-little-95 {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
 				cpu-little-critical {
 					temperature = <110000>;
 					hysteresis = <0>;
 					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cpu_little_75>;
+					cooling-device = <&cpu0 0 2>,
+							 <&cpu1 0 2>,
+							 <&cpu2 0 2>,
+							 <&cpu3 0 2>;
+				};
+
+				map1 {
+					trip = <&cpu_little_80>;
+					cooling-device = <&cpu0 2 4>,
+							 <&cpu1 2 4>,
+							 <&cpu2 2 4>,
+							 <&cpu3 2 4>;
+				};
+
+				map2 {
+					trip = <&cpu_little_85>;
+					cooling-device = <&cpu0 4 7>,
+							 <&cpu1 4 7>,
+							 <&cpu2 4 7>,
+							 <&cpu3 4 7>;
+				};
+
+				map3 {
+					trip = <&cpu_little_90>;
+					cooling-device = <&cpu0 7 10>,
+							 <&cpu1 7 10>,
+							 <&cpu2 7 10>,
+							 <&cpu3 7 10>;
+				};
+
+				map4 {
+					trip = <&cpu_little_95>;
+					cooling-device = <&cpu0 10 13>,
+							 <&cpu1 10 13>,
+							 <&cpu2 10 13>,
+							 <&cpu3 10 13>;
 				};
 			};
 		};
@@ -689,12 +1180,24 @@
 			thermal-sensors = <&tmu 3>;
 
 			trips {
-				/* where the stock kernel starts to slow the GPU down */
-				gpu_alert: gpu-alert {
-					temperature = <88000>;
-					hysteresis = <5000>;
+				gpu_80: gpu-80 {
+					temperature = <80000>;
+					hysteresis = <2000>;
 					type = "passive";
 				};
+
+				gpu_88: gpu-88 {
+					temperature = <88000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
+				gpu_95: gpu-95 {
+					temperature = <95000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+
 				gpu-critical {
 					temperature = <110000>;
 					hysteresis = <0>;
@@ -704,8 +1207,18 @@
 
 			cooling-maps {
 				map0 {
-					trip = <&gpu_alert>;
-					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+					trip = <&gpu_80>;
+					cooling-device = <&gpu 0 2>;
+				};
+
+				map1 {
+					trip = <&gpu_88>;
+					cooling-device = <&gpu 2 4>;
+				};
+
+				map2 {
+					trip = <&gpu_95>;
+					cooling-device = <&gpu 4 7>;
 				};
 			};
 		};
