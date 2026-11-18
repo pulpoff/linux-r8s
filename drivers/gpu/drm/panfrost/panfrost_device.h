@@ -115,6 +115,12 @@ struct panfrost_compatible {
 
 	/* GPU configuration quirks */
 	u8 gpu_quirks;
+
+	/*
+	 * Product ID userspace is given in place of the GPU's own, for a GPU
+	 * it does not know but drives as the one named here. 0: the GPU's own.
+	 */
+	u16 user_prod_id;
 };
 
 /**

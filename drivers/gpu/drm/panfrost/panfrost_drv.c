@@ -70,7 +70,9 @@ static int panfrost_ioctl_get_param(struct drm_device *ddev, void *data, struct 
 		break
 
 	switch (param->param) {
-		PANFROST_FEATURE(GPU_PROD_ID, id);
+	case DRM_PANFROST_PARAM_GPU_PROD_ID:
+		param->value = pfdev->comp->user_prod_id ?: pfdev->features.id;
+		break;
 		PANFROST_FEATURE(GPU_REVISION, revision);
 		PANFROST_FEATURE(SHADER_PRESENT, shader_present);
 		PANFROST_FEATURE(TILER_PRESENT, tiler_present);
@@ -1144,6 +1146,11 @@ static const struct panfrost_compatible exynos990_data = {
 	.num_pm_domains = 1,
 	.pm_domain_names = NULL,
 	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
+	/*
+	 * Mesa drives Valhall v9 but knows only the Mali-G57 (product 0x9001)
+	 * of it; the G77 has the same instruction set, job manager and tiler.
+	 */
+	.user_prod_id = 0x9001,
 };
 
 static const struct panfrost_compatible mediatek_mt8192_data = {
