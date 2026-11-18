@@ -9,6 +9,7 @@
 #include <dt-bindings/clock/samsung,exynos990-acpm.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/soc/samsung,exynos-usi.h>
+#include <dt-bindings/thermal/thermal.h>
 
 / {
 	compatible = "samsung,exynos990";
@@ -309,6 +310,17 @@
 				      "watchdog_src";
 			samsung,syscon-phandle = <&pmu_system_controller>;
 			samsung,cluster-index = <2>;
+		};
+
+		/* the CPU clusters' TMU, then the GPU's, ISP's and NPU's; the APM firmware runs both */
+		tmu: thermal-sensor@10090000 {
+			compatible = "samsung,exynos990-tmu";
+			reg = <0x10090000 0x800>,
+			      <0x100a0000 0x800>;
+			interrupts = <GIC_SPI 478 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 479 IRQ_TYPE_LEVEL_HIGH>;
+			samsung,acpm-ipc = <&acpm_ipc>;
+			#thermal-sensor-cells = <1>;
 		};
 
 		gic: interrupt-controller@10101000 {
@@ -621,6 +633,109 @@
 
 			clocks = <&oscclk>;
 			clock-names = "oscclk";
+		};
+	};
+
+	/*
+	 * Critical at 110 C, below the 115 C at which the stock kernel's zones are "hot". No CPU cooling yet: the
+	 * cores run at the clocks the bootloader set.
+	 */
+	thermal-zones {
+		cpu-big-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu 0>;
+
+			trips {
+				cpu-big-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+
+		cpu-mid-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu 1>;
+
+			trips {
+				cpu-mid-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+
+		cpu-little-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu 2>;
+
+			trips {
+				cpu-little-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+
+		gpu-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu 3>;
+
+			trips {
+				/* where the stock kernel starts to slow the GPU down */
+				gpu_alert: gpu-alert {
+					temperature = <88000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+				gpu-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&gpu_alert>;
+					cooling-device = <&gpu THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		isp-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu 4>;
+
+			trips {
+				isp-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+		};
+
+		npu-thermal {
+			polling-delay-passive = <100>;
+			polling-delay = <1000>;
+			thermal-sensors = <&tmu 5>;
+
+			trips {
+				npu-critical {
+					temperature = <110000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
 		};
 	};
 
