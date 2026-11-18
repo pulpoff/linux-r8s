@@ -202,9 +202,12 @@ static int exynos_usi_configure(struct exynos_usi *usi)
 {
 	int ret;
 
-	ret = exynos_usi_set_sw_conf(usi, usi->mode);
-	if (ret)
-		return ret;
+	/* a block with one protocol only has no selector to set */
+	if (usi->sysreg) {
+		ret = exynos_usi_set_sw_conf(usi, usi->mode);
+		if (ret)
+			return ret;
+	}
 
 	if (usi->data->ver == USI_VER1)
 		ret = clk_bulk_prepare_enable(usi->data->num_clks,
@@ -256,10 +259,18 @@ static int exynos_usi_parse_dt(struct device_node *np, struct exynos_usi *usi)
 		return -EINVAL;
 	usi->mode = mode;
 
+	/*
+	 * Optional: the dedicated I2C channels of USI v2 blocks (the
+	 * USIxx_I2C ones of Exynos 990) have the USI_CON reset and
+	 * USI_OPTION like any USI, but no protocol selector in a sysreg.
+	 */
 	usi->sysreg = syscon_regmap_lookup_by_phandle_args(np, "samsung,sysreg",
 							   1, &usi->sw_conf);
-	if (IS_ERR(usi->sysreg))
-		return PTR_ERR(usi->sysreg);
+	if (IS_ERR(usi->sysreg)) {
+		if (PTR_ERR(usi->sysreg) != -ENOENT)
+			return PTR_ERR(usi->sysreg);
+		usi->sysreg = NULL;
+	}
 
 	usi->clkreq_on = of_property_read_bool(np, "samsung,clkreq-on");
 
