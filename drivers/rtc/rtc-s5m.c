@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/bcd.h>
+#include <linux/delay.h>
 #include <linux/reboot.h>
 #include <linux/regmap.h>
 #include <linux/rtc.h>
@@ -17,6 +18,7 @@
 #include <linux/mfd/samsung/core.h>
 #include <linux/mfd/samsung/rtc.h>
 #include <linux/mfd/samsung/s2mps14.h>
+#include <linux/mfd/samsung/s2mps19.h>
 
 /*
  * Maximum number of retries for checking changes in UDR field
@@ -57,6 +59,7 @@ enum {
  * S2MPS11/14 | WUDR       | RUDR      | WUDR + RUDR
  * S2MPS13    | WUDR       | RUDR      | WUDR + AUDR
  * S2MPS15    | WUDR       | RUDR      | AUDR
+ * S2MPS19    | WUDR       | RUDR      | AUDR
  */
 struct s5m_rtc_reg_config {
 	/* Number of registers used for setting time/alarm0/alarm1 */
@@ -84,6 +87,11 @@ struct s5m_rtc_reg_config {
 	unsigned int read_time_udr_mask;
 	unsigned int write_time_udr_mask;
 	unsigned int write_alarm_udr_mask;
+	/*
+	 * Time in us the UDR transfer needs before the buffer can be read back
+	 * or polled. 0 if the device needs no wait.
+	 */
+	unsigned int udr_settle_us;
 };
 
 /* Register map for S5M8767 */
@@ -112,6 +120,24 @@ static const struct s5m_rtc_reg_config s2mpg10_rtc_regs = {
 	.read_time_udr_mask	= S2MPS_RTC_RUDR_MASK,
 	.write_time_udr_mask	= S2MPS15_RTC_WUDR_MASK,
 	.write_alarm_udr_mask	= S2MPS15_RTC_AUDR_MASK,
+};
+
+/*
+ * Register map for S2MPS19 - UDR bits as on S2MPS15. The vendor driver waits
+ * 1 ms after every UDR write instead of polling, so do the same.
+ */
+static const struct s5m_rtc_reg_config s2mps19_rtc_regs = {
+	.regs_count		= 7,
+	.time			= S2MPS19_RTC_SEC,
+	.ctrl			= S2MPS19_RTC_CTRL,
+	.alarm0			= S2MPS19_RTC_A0SEC,
+	.alarm1			= S2MPS19_RTC_A1SEC,
+	.udr_update		= S2MPS19_RTC_UPDATE,
+	.autoclear_udr_mask	= S2MPS15_RTC_WUDR_MASK | S2MPS15_RTC_AUDR_MASK,
+	.read_time_udr_mask	= S2MPS_RTC_RUDR_MASK,
+	.write_time_udr_mask	= S2MPS15_RTC_WUDR_MASK,
+	.write_alarm_udr_mask	= S2MPS15_RTC_AUDR_MASK,
+	.udr_settle_us		= 1000,
 };
 
 /* Register map for S2MPS13 */
@@ -232,6 +258,9 @@ static int s5m8767_wait_for_udr_update(struct s5m_rtc_info *info)
 	int ret, retry = UDR_READ_RETRY_CNT;
 	unsigned int data;
 
+	if (info->regs->udr_settle_us)
+		fsleep(info->regs->udr_settle_us);
+
 	do {
 		ret = regmap_read(info->regmap, info->regs->udr_update, &data);
 	} while (--retry && (data & info->regs->autoclear_udr_mask) && !ret);
@@ -258,6 +287,11 @@ static int s5m_check_pending_alarm_interrupt(struct s5m_rtc_info *info,
 	case S2MPS14X:
 	case S2MPS13X:
 		ret = regmap_read(info->s5m87xx->regmap_pmic, S2MPS14_REG_ST2,
+				&val);
+		val &= S2MPS_ALARM0_STATUS;
+		break;
+	case S2MPS19:
+		ret = regmap_read(info->s5m87xx->regmap_pmic, S2MPS19_PMIC_STATUS2,
 				&val);
 		val &= S2MPS_ALARM0_STATUS;
 		break;
@@ -305,6 +339,7 @@ static int s5m8767_rtc_set_alarm_reg(struct s5m_rtc_info *info)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		/* No exceptions needed */
 		break;
 	default:
@@ -344,6 +379,9 @@ static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 				ret);
 			return ret;
 		}
+
+		if (info->regs->udr_settle_us)
+			fsleep(info->regs->udr_settle_us);
 	}
 	ret = regmap_bulk_read(info->regmap, info->regs->time, data,
 			info->regs->regs_count);
@@ -356,6 +394,7 @@ static int s5m_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		s5m8767_data_to_tm(data, tm, info->rtc_24hr_mode);
 		break;
 
@@ -380,6 +419,7 @@ static int s5m_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		ret = s5m8767_tm_to_data(tm, data);
 		break;
 	default:
@@ -418,6 +458,7 @@ static int s5m_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		s5m8767_data_to_tm(data, &alrm->time, info->rtc_24hr_mode);
 		alrm->enabled = 0;
 		for (i = 0; i < info->regs->regs_count; i++) {
@@ -457,6 +498,7 @@ static int s5m_rtc_stop_alarm(struct s5m_rtc_info *info)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		for (i = 0; i < info->regs->regs_count; i++)
 			data[i] &= ~ALARM_ENABLE_MASK;
 
@@ -496,6 +538,7 @@ static int s5m_rtc_start_alarm(struct s5m_rtc_info *info)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		data[RTC_SEC] |= ALARM_ENABLE_MASK;
 		data[RTC_MIN] |= ALARM_ENABLE_MASK;
 		data[RTC_HOUR] |= ALARM_ENABLE_MASK;
@@ -534,6 +577,7 @@ static int s5m_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	case S2MPS15X:
 	case S2MPS14X:
 	case S2MPS13X:
+	case S2MPS19:
 		s5m8767_tm_to_data(&alrm->time, data);
 		break;
 
@@ -592,6 +636,7 @@ static const struct rtc_class_ops s5m_rtc_ops = {
 
 static int s5m8767_rtc_init_reg(struct s5m_rtc_info *info)
 {
+	bool changed;
 	u8 data[2];
 	int ret;
 
@@ -626,6 +671,23 @@ static int s5m8767_rtc_init_reg(struct s5m_rtc_info *info)
 		 * the description from datasheet but vendor code does that
 		 * really.
 		 */
+		ret = s5m8767_rtc_set_alarm_reg(info);
+		break;
+
+	case S2MPS19:
+		/*
+		 * The bootloader leaves CTRL at binary, 24 hour mode. Only touch
+		 * the two mode bits, and only if they are wrong (the RTC lost
+		 * power), as the vendor driver does: there the write is followed
+		 * by AUDR as well.
+		 */
+		ret = regmap_update_bits_check(info->regmap, info->regs->ctrl,
+					       BCD_EN_MASK | MODEL24_MASK,
+					       MODEL24_MASK, &changed);
+		if (ret < 0 || !changed)
+			break;
+
+		dev_info(info->dev, "RTC control was reset, set 24 hour binary mode\n");
 		ret = s5m8767_rtc_set_alarm_reg(info);
 		break;
 
@@ -714,6 +776,8 @@ static int s5m_rtc_probe(struct platform_device *pdev)
 					     "Failed to allocate regmap\n");
 	} else if (device_type == S2MPG10) {
 		info->regs = &s2mpg10_rtc_regs;
+	} else if (device_type == S2MPS19) {
+		info->regs = &s2mps19_rtc_regs;
 	} else {
 		return dev_err_probe(&pdev->dev, -ENODEV,
 				     "Unsupported device type %d\n",
@@ -812,6 +876,7 @@ static const struct platform_device_id s5m_rtc_id[] = {
 	{ .name = "s2mps13-rtc", .driver_data = S2MPS13X },
 	{ .name = "s2mps14-rtc", .driver_data = S2MPS14X },
 	{ .name = "s2mps15-rtc", .driver_data = S2MPS15X },
+	{ .name = "s2mps19-rtc", .driver_data = S2MPS19 },
 	{ }
 };
 MODULE_DEVICE_TABLE(platform, s5m_rtc_id);
