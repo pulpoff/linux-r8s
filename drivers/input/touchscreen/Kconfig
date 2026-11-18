@@ -1402,6 +1402,18 @@ config TOUCHSCREEN_ZINITIX
 	  To compile this driver as a module, choose M here: the
 	  module will be called zinitix.
 
+config TOUCHSCREEN_ZINITIX_ZT7650
+	tristate "Zinitix ZT7650 touchscreen support"
+	depends on I2C
+	help
+	  Say Y here if you have a touchscreen using the Zinitix ZT7650,
+	  as the Samsung Galaxy S20 FE has.
+
+	  If unsure, say N.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called zinitix-zt7650.
+
 config TOUCHSCREEN_HIMAX_HX83112B
 	tristate "Himax hx83112b touchscreen driver"
 	depends on I2C
