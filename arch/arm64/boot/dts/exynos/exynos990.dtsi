@@ -503,6 +503,7 @@
 			compatible = "samsung,exynos990-pmu",
 				     "samsung,exynos7-pmu", "syscon";
 			reg = <0x15860000 0x10000>;
+			google,pmu-intr-gen-syscon = <&pmu_intr_gen>;
 
 			reboot: syscon-reboot {
 				compatible = "syscon-reboot";
@@ -511,6 +512,11 @@
 				mask = <0x2>; /* SWRESET_TRIGGER */
 				value = <0x2>;
 			};
+		};
+
+		pmu_intr_gen: syscon@15870000 {
+			compatible = "samsung,exynos990-pmu-intr-gen", "syscon";
+			reg = <0x15870000 0x10000>;
 		};
 
 		pinctrl_cmgp: pinctrl@15c30000 {
