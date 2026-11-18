@@ -53,6 +53,18 @@
 		      <0x8 0x80000000 0x1 0x00000000>;
 	};
 
+	/*
+	 * 4500 mAh. Stock floats at 4.38 V (battery,chg_float_voltage); the
+	 * charger driver programs voltage-max-design as its float voltage,
+	 * and 4.2 V (~85-90 %) is kept on purpose: a bring-up phone lives on
+	 * USB all day.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+		voltage-max-design-microvolt = <4200000>;
+		charge-full-design-microamp-hours = <4500000>;
+	};
+
 	/* TODO: Remove this once PMIC is implemented */
 	reg_dummy: regulator-0 {
 		compatible = "regulator-fixed";
@@ -242,6 +254,60 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
 	};
+
+	pmic_int: pmic-int-pins {
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+/* MAX77705: PMIC top, charger and fuel gauge (vendor hsi2c7) */
+&usi_i2c_peric0_3 {
+	status = "okay";
+};
+
+&hsi2c_7 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	fuel-gauge@36 {
+		compatible = "maxim,max77705-battery";
+		reg = <0x36>;
+		power-supplies = <&max77705_charger>;
+		/* fuelgauge,fg_resistor = 2: 5 mOhm, as on the S10e */
+		shunt-resistor-micro-ohms = <5000>;
+		interrupt-parent = <&max77705>;
+		interrupts = <2>;
+	};
+
+	max77705: pmic@66 {
+		compatible = "maxim,max77705";
+		reg = <0x66>;
+		interrupts-extended = <&gpa1 6 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		pinctrl-0 = <&pmic_int>;
+		pinctrl-names = "default";
+	};
+
+	max77705_charger: charger@69 {
+		compatible = "maxim,max77705-charger";
+		reg = <0x69>;
+		monitored-battery = <&battery>;
+		interrupt-parent = <&max77705>;
+		interrupts = <0>;
+	};
+};
+
+/* touchscreen bus (vendor hsi2c15): Zinitix @0x20 or STM FTS @0x49 */
+&usi_i2c_peric1_7 {
+	status = "okay";
+};
+
+&hsi2c_15 {
+	clock-frequency = <400000>;
+	status = "okay";
 };
 
 &pmu_system_controller {
