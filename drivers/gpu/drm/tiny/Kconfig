@@ -24,6 +24,22 @@ config DRM_ARCPGU
 
 	  If M is selected the module will be called arcpgu.
 
+config DRM_EXYNOS990_DECON_KMS
+	tristate "Exynos 990 DECON handover KMS (Galaxy S20 FE)"
+	depends on DRM && OF && (ARCH_EXYNOS || COMPILE_TEST)
+	select APERTURE_HELPERS
+	select DRM_CLIENT_SELECTION
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	select DRM_MIPI_DSI
+	select DRM_PANEL_BRIDGE
+	help
+	  Page flips on the DECON0 command-mode pipeline the bootloader left
+	  running, and a DSI command host on its link. Does not initialise the
+	  display hardware.
+
+	  If M is selected the module will be called exynos990-decon-kms.
+
 config DRM_BOCHS
 	tristate "DRM Support for bochs dispi vga interface (qemu stdvga)"
 	depends on DRM && PCI && MMU
