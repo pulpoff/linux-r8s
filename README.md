@@ -14,7 +14,7 @@ What works
 | Part | State |
 | --- | --- |
 | Boot | from the BOOT partition through a small stub and U-Boot; test kernels are started from there with kexec, under the SoC watchdog |
-| Console | the bootloader's framebuffer (1080x2400) with fbcon, through simpledrm |
+| Display | DRM/KMS on the pipeline the bootloader leaves running (DECON0, IDMA channel 0, DSIM0, EA8079 at 1080x2400 and 120 Hz in command mode with DSC): page flips at frame start, vblank events, fbcon. Frames go to the panel only when the picture changes; the panel refreshes itself in between |
 | USB | device mode (dwc3): USB networking, ssh |
 | Storage | UFS 3.1: new Exynos 990 host variant and UFS PHY, HS-G4 x2 (about 1.1 GB/s reads); Debian boots from its own partition |
 | RAM | all 6 GB the bootloader hands over (about 5.3 GB usable after the firmware's carve-outs); the stock carve-outs are reserved |
