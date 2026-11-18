@@ -20,6 +20,7 @@
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/ratelimit.h>
 #include <linux/slab.h>
 
 #include "dma-iommu.h"
@@ -306,6 +307,8 @@ struct sysmmu_drvdata {
 
 	/* v7 fields */
 	bool has_vcr;			/* virtual machine control register */
+
+	struct ratelimit_state fault_rs;	/* fault reports */
 };
 
 #define SYSMMU_REG(data, reg) ((data)->sfrbase + (data)->variant->reg)
@@ -582,7 +585,9 @@ static irqreturn_t exynos_sysmmu_irq(int irq, void *dev_id)
 		dev_err(data->sysmmu, "Unhandled interrupt bit %u\n", itype);
 		goto out;
 	}
-	show_fault_information(data, &fault);
+	/* a master stuck on an unmapped address faults thousands of times a second */
+	if (__ratelimit(&data->fault_rs))
+		show_fault_information(data, &fault);
 
 	if (data->domain) {
 		ret = report_iommu_fault(&data->domain->domain, data->master,
@@ -774,6 +779,7 @@ static int exynos_sysmmu_probe(struct platform_device *pdev)
 
 	data->sysmmu = dev;
 	spin_lock_init(&data->lock);
+	ratelimit_state_init(&data->fault_rs, 5 * HZ, 10);
 
 	__sysmmu_get_version(data);
 
