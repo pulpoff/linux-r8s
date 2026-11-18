@@ -402,6 +402,26 @@ config PCI_EXYNOS
 	  hardware and therefore the driver re-uses the DesignWare core
 	  functions to implement the driver.
 
+config PCIE_EXYNOS990
+	tristate "Samsung Exynos 990 PCIe controller (Wi-Fi channel)"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on PCI_MSI
+	select PCIE_DW_HOST
+	help
+	  Enables the GEN2 PCIe root complex of the Exynos 990 that the
+	  Galaxy S20 FE uses for its Wi-Fi (QCA6390). Based on the
+	  DesignWare core.
+
+config PCIE_EXYNOS990_GEN4
+	bool "Samsung Exynos 990 GEN4 PCIe controller (modem channel)"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	depends on PCI_MSI
+	select PCIE_DW_HOST
+	help
+	  Enables support for the Exynos 990 GEN4 PCIe root complex (HSI2),
+	  which links the Galaxy S20 FE's S5123 modem. The link is brought
+	  up on demand, when the modem's bootloader asks for it.
+
 config PCIE_FU740
 	bool "SiFive FU740 PCIe controller"
 	depends on PCI_MSI
