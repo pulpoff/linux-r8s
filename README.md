@@ -18,8 +18,8 @@ What works
 | Display | DRM/KMS on the pipeline the bootloader leaves running (DECON0, IDMA channel 0, DSIM0, EA8079 at 1080x2400 and 120 Hz in command mode with DSC): page flips at frame start, vblank events, fbcon. Frames go to the panel only when the picture changes; the panel refreshes itself in between |
 | Panel | the EA8079 as a DSI device of DECON0: brightness (256 steps, a backlight device), and screen off and on through sleep mode with the vendor init sequence on wake (off 235 ms, on 210 ms) |
 | Touchscreen | Zinitix ZT7650 on I2C, 1080x2400, through a new driver: taps and swipes drive GNOME (the quick settings and their brightness slider, the edge swipes). Several fingers at once and palm rejection are not checked yet |
-| GPU | Mali-G77 MP11 (GPU_ID 0x90800011) through Panfrost, with its power domain (the secure monitor restores its TZPC after each power-up) and its clock from the APM firmware (156 to 455 MHz, devfreq). Jobs run: an offscreen GLES2 test renders the same pixels as llvmpipe. Mesa 26.2 does not know the G77, so userspace is given it as the G57, the Valhall with the same architecture: GNOME Shell draws on it (OpenGL ES; Mesa's Vulkan driver does not cover this Valhall generation) |
-| Temperatures | the six SoC sensors (big, middle and little cores, GPU, ISP, NPU) through the APM firmware, as thermal zones and hwmon devices. Each zone shuts the phone down at 110 C; the GPU is slowed down from 88 C. The CPUs have no cooling yet (no cpufreq) |
+| GPU | Mali-G77 MP11 (GPU_ID 0x90800011) through Panfrost, with its power domain (the secure monitor restores its TZPC after each power-up) and its clock from the APM firmware (the stock kernel's 156 to 800 MHz, devfreq). Jobs run: an offscreen GLES2 test renders the same pixels as llvmpipe. Mesa 26.2 does not know the G77, so userspace is given it as the G57, the Valhall with the same architecture: GNOME Shell draws on it (OpenGL ES; Mesa's Vulkan driver does not cover this Valhall generation) |
+| Temperatures | the six SoC sensors (big, middle and little cores, GPU, ISP, NPU) through the APM firmware, as thermal zones and hwmon devices. Each zone shuts the phone down at 110 C; the CPU clusters and the GPU slow down from 75 C (the GPU from 80 C) in rungs: full load on both M5s holds at 80 to 84 C |
 | Power firmware | ACPM, the APM firmware's IPC (mailbox and SRAM channels): DVFS rates for the GPU; it sets the voltage with each rate |
 | USB | device mode (dwc3): USB networking, ssh |
 | Storage | UFS 3.1: new Exynos 990 host variant and UFS PHY, HS-G4 x2 (about 1.1 GB/s reads); Debian boots from its own partition |
@@ -28,14 +28,14 @@ What works
 | Watchdog | the SoC watchdog keeps running across kexec, so a hung test kernel resets the phone; the kernel log of a panic survives in pstore (ramoops at the stock address) |
 | Reboot | into recovery through the PMU's reboot-reason register (download and bootloader mode are in the DT, untested) |
 | Keys | the power key (the volume keys are in the DT, untested) |
-| CPUs | all 8 cores (4 Cortex-A55, 2 Cortex-A76, 2 Mongoose M5) through PSCI, with the PMU power-down handshake of the stock kernel: CPU hotplug works, and a kernel started with kexec gets every core. No cpufreq or idle states yet: the cores run at the clocks the bootloader sets |
+| CPUs | all 8 cores (4 Cortex-A55, 2 Cortex-A76, 2 Mongoose M5) through PSCI, with the PMU power-down handshake of the stock kernel: CPU hotplug works, and a kernel started with kexec gets every core. Frequency scaling (schedutil) through the APM firmware, on the ECT's levels: A55s 442 to 2002 MHz, A76s 507 to 2504 MHz, M5s 546 to 2730 MHz. No idle states yet |
 | Scheduling | the scheduler knows the three core types (capacities from the stock firmware); HZ=1000, full preemption, schedutil, BFQ, MGLRU |
 
 Not yet
 =======
 
-Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, cpufreq
-(and with it CPU cooling), CPU idle states and suspend.
+Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, CPU idle
+states and suspend.
 
 Changes on top of 7.2.15
 ========================
