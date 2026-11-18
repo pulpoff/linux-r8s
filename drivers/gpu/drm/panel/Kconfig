@@ -821,6 +821,17 @@ config DRM_PANEL_RONBO_RB070D30
 	  Say Y here if you want to enable support for Ronbo Electronics
 	  RB070D30 1024x600 DSI panel.
 
+config DRM_PANEL_SAMSUNG_EA8079_R8S
+	tristate "Samsung EA8079 panel of the Galaxy S20 FE"
+	depends on OF
+	depends on DRM_MIPI_DSI
+	depends on BACKLIGHT_CLASS_DEVICE
+	depends on DRM_EXYNOS990_DECON_KMS
+	help
+	  Say Y here for the 1080x2400 EA8079 AMOLED panel of the Samsung
+	  Galaxy S20 FE (r8s). The panel is taken over lit from the bootloader:
+	  brightness, and off and on through sleep mode.
+
 config DRM_PANEL_SAMSUNG_AMS581VF01
 	tristate "Samsung AMS581VF01 panel"
 	depends on OF
