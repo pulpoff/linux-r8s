@@ -10,3 +10,13 @@ config EXYNOS_THERMAL
 	  the TMU, reports temperature and handles cooling action if defined.
 	  This driver uses the Exynos core thermal APIs and TMU configuration
 	  data from the supported SoCs.
+
+config EXYNOS990_THERMAL
+	tristate "Exynos 990 temperature sensors"
+	depends on THERMAL_OF
+	depends on EXYNOS_ACPM_PROTOCOL
+	default ARCH_EXYNOS
+	help
+	  The Exynos 990's temperature sensors (CPU clusters, GPU, ISP and
+	  NPU), which the APM firmware owns: their temperatures are read
+	  through its ACPM TMU channel.
