@@ -8,6 +8,7 @@
 /dts-v1/;
 #include "exynos990.dtsi"
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/leds/common.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 
@@ -192,6 +193,30 @@
 		};
 	};
 
+	/* the camera flash, lit only as a torch: up to 225 mA, stock's continuous level */
+	led-controller {
+		compatible = "richtek,rt8547";
+		enable-gpios = <&gpp4 0 GPIO_ACTIVE_HIGH>;
+		ctrl-gpios = <&gpp4 4 GPIO_ACTIVE_HIGH>;
+
+		led {
+			function = LED_FUNCTION_FLASH;
+			color = <LED_COLOR_ID_WHITE>;
+			led-max-microamp = <225000>;
+		};
+	};
+
+	/* the main microphone's 1.8 V (stock main_micbias_1p8, from buck12m) */
+	main_micbias: regulator-main-micbias {
+		compatible = "regulator-fixed";
+		regulator-name = "main-micbias";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		gpio = <&gpp4 1 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		startup-delay-us = <5000>;
+	};
+
 	/* UFS VCC: downstream "ufs-vcc" fixed regulator on gpg1-0 (xboot-ldo). */
 	ufs_vcc_reg: regulator-ufs-vcc {
 		compatible = "regulator-fixed";
@@ -200,6 +225,46 @@
 		enable-active-high;
 		regulator-boot-on;
 		regulator-always-on;
+	};
+
+	/*
+	 * The QCA6390's WLAN_EN (stock cnss-qca6390 wlan-en-gpio, gpb0-4) on its 0.95 V core
+	 * rail (VDD_WIFI_0P95, buck4m). It keeps its level in the SoC's power-down mode, like
+	 * stock's cnss_wlan_en_active.
+	 */
+	wlan_en: regulator-wlan-en {
+		compatible = "regulator-fixed";
+		regulator-name = "wlan-en";
+		gpio = <&gpb0 4 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		vin-supply = <&buck4m>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wlan_en_pins>;
+		startup-delay-us = <50000>;
+	};
+
+	/*
+	 * The QCA6390's own PMU, for the power sequencer hci_qca needs. It drives
+	 * BT_EN (stock bluetooth gpios[0], gpm16-0) on the same 0.95 V rail as the
+	 * Wi-Fi. WLAN_EN stays with wlan_en above, which the PCIe host enables.
+	 * The other supplies are always-on PMIC rails (stock lists only
+	 * VDD_WIFI_0P95), so they are left to dummies. The regulators child is
+	 * only what the sequencer matches the Bluetooth node against.
+	 */
+	qca6390-pmu {
+		compatible = "qcom,qca6390-pmu";
+		pinctrl-names = "default";
+		pinctrl-0 = <&bt_en_pins>;
+		vddaon-supply = <&buck4m>;
+		vddpmu-supply = <&buck4m>;
+		vddrfa0p95-supply = <&buck4m>;
+		bt-enable-gpios = <&gpm16 0 GPIO_ACTIVE_HIGH>;
+
+		regulators {
+			vreg_pmu_aon_0p59: ldo1 {
+				regulator-name = "vreg_pmu_aon_0p59";
+			};
+		};
 	};
 
 	/* the touchscreen's 3.0 V: downstream "tsp_ldo_en" on gpm21-0 */
@@ -253,6 +318,20 @@
 		regulators {
 			buck4m: buck4m {
 				regulator-name = "vdd_wifi_0p95";
+			};
+
+			/* the vibrator's 3.3 V (stock VDD_MOTOR_3P3) */
+			ldo27m: ldo27m {
+				regulator-name = "vdd-motor";
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+			};
+
+			/* the sub (top) microphone's 1.8 V (stock sub_micbias_1p8) */
+			ldo13m: ldo13m {
+				regulator-name = "sub-micbias";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
 			};
 		};
 	};
@@ -332,6 +411,18 @@
 		#interrupt-cells = <1>;
 		pinctrl-0 = <&pmic_int>;
 		pinctrl-names = "default";
+
+		/*
+		 * The linear vibrator, driven at PWM / 128. Stock's period is
+		 * 37.65 us (207.5 Hz), but the boot loader leaves the PWM
+		 * ticking at 1 MHz: 38 us (205.6 Hz) is the nearest step and
+		 * measured strongest (37 us: 211 Hz, -6 %; 36 us: 217 Hz, -35 %).
+		 */
+		haptic {
+			compatible = "maxim,max77705-haptic";
+			haptic-supply = <&ldo27m>;
+			pwms = <&pwm 1 38000 0>;
+		};
 	};
 
 	max77705_charger: charger@69 {
@@ -341,6 +432,115 @@
 		interrupt-parent = <&max77705>;
 		interrupts = <0>;
 	};
+};
+
+/*
+ * The speaker amps (vendor hsi2c31): two CS35L40s on one TDM bus, bottom
+ * loudspeaker @40 ("cs35l40-bot", right channel) and earpiece @41
+ * ("cs35l40-rcv"). VA is an always-on 1.8 V rail of the sub PMIC and VP is
+ * the battery, so both stay with dummies. Boost: stock sets only the 4.1 A
+ * peak; inductor and cap are the chip-reset defaults, as on the S10e.
+ */
+&usi_i2c_peric0_15 {
+	status = "okay";
+};
+
+&hsi2c_31 {
+	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&hsi2c31_bus &amp_irq>;
+	status = "okay";
+
+	spk_amp: amplifier@40 {
+		compatible = "cirrus,cs35l40";
+		reg = <0x40>;
+		#sound-dai-cells = <1>;
+		sound-name-prefix = "SPK";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&spk_amp_reset>;
+		reset-gpios = <&gpb2 5 GPIO_ACTIVE_HIGH>;
+		interrupts-extended = <&gpm24 0 IRQ_TYPE_LEVEL_LOW>;
+
+		cirrus,boost-type = <0>;
+		cirrus,boost-peak-milliamp = <4100>;
+		cirrus,boost-ind-nanohenry = <1000>;
+		cirrus,boost-cap-microfarad = <15>;
+		cirrus,asp-sdout-hiz = <3>;
+	};
+
+	rcv_amp: amplifier@41 {
+		compatible = "cirrus,cs35l40";
+		reg = <0x41>;
+		#sound-dai-cells = <1>;
+		sound-name-prefix = "RCV";
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&rcv_amp_reset>;
+		reset-gpios = <&gpb2 4 GPIO_ACTIVE_HIGH>;
+		interrupts-extended = <&gpm24 0 IRQ_TYPE_LEVEL_LOW>;
+
+		cirrus,boost-type = <0>;
+		cirrus,boost-peak-milliamp = <4100>;
+		cirrus,boost-ind-nanohenry = <1000>;
+		cirrus,boost-cap-microfarad = <15>;
+		cirrus,asp-sdout-hiz = <3>;
+	};
+};
+
+&abox {
+	/* the firmware DRAM is the last 42 MiB of abox_reserved (0xf8000000) */
+	memory-region = <&abox_reserved>, <&abox_pci_rmem>;
+	memory-region-names = "fw", "pci";
+	/* "pci": stock selects aud-i2s4-pci for its voice path; ours on request */
+	pinctrl-names = "active", "idle", "pci";
+	pinctrl-0 = <&aud_i2s2_bus>;
+	pinctrl-1 = <&aud_i2s2_idle>;
+	pinctrl-2 = <&aud_i2s2_bus>, <&aud_i2s4_pci>;
+	status = "okay";
+};
+
+/ {
+	sound {
+		compatible = "samsung,r8s-audio";
+		samsung,audio-cpu = <&abox>;
+		/* TDM slot order: earpiece amp on slot 0, loudspeaker amp on slot 1 */
+		samsung,speaker-amps = <&rcv_amp>, <&spk_amp>;
+		samsung,mic-codec = <&vts_slif>;
+	};
+};
+
+/* the PDM mics: line 0 (gpv0-0 clock, gpv0-3 data) and line 1 (gpv0-1, gpv0-4) */
+&usi_spi16 {
+	status = "okay";
+};
+
+/*
+ * The S5123 modem's boot SPI: its ROM takes the CP bootloader here, TX only,
+ * at about stock's 2.15 MHz. SCK is the IP clock / 4, and the USI16 divider
+ * can't get there from the 400 MHz PERIC1 IP clock: 2.17 MHz lands on
+ * OSCCLK / 3, which the clock framework picks when the first transfer sets
+ * the rate (with the clock running; switching the mux while it is gated
+ * left the bus without a clock and the boot hard-locked in the SPI probe).
+ */
+&spi_16 {
+	status = "okay";
+
+	cpboot@0 {
+		compatible = "samsung,s5123-boot-spi";
+		reg = <0>;
+		spi-max-frequency = <2166667>;
+	};
+};
+
+&vts_slif {
+	pinctrl-names = "default", "idle";
+	pinctrl-0 = <&dmic_bus_clk>, <&dmic_pdm>, <&dmic_bus_clk1>, <&dmic_pdm1_bus>;
+	pinctrl-1 = <&dmic_bus_clk_idle>, <&dmic_pdm_idle>,
+		    <&dmic_bus_clk1_idle>, <&dmic_pdm1_idle>;
+	mic0-supply = <&main_micbias>;
+	mic1-supply = <&ldo13m>;
+	status = "okay";
 };
 
 /* touchscreen bus (vendor hsi2c15): Zinitix @0x20 or STM FTS @0x49 */
@@ -407,6 +607,121 @@
 	status = "okay";
 	vdd10-supply = <&reg_dummy>;
 	vdd33-supply = <&reg_dummy>;
+};
+
+&pcie_0 {
+	reset-gpios = <&gpf0 1 GPIO_ACTIVE_LOW>;
+	vpcie-supply = <&wlan_en>;
+	/* stock keeps the Wi-Fi's DMA memory below 4 GB (cnss wifi_region alloc-ranges) */
+	dma-ranges = <0x02000000 0x0 0x0 0x0 0x1 0x0>;
+	/* EL2 S2MPU "hsi1" (index 24 of the stock instance list), VID of this master */
+	samsung,s2mpu = <24 1>;
+	status = "okay";
+};
+
+/*
+ * The S5123 modem's link. Shared memory at the addresses its firmware
+ * expects; EL2 S2MPU "hsi2" (index 25 of the stock instance list) opened
+ * for those regions only, for VID 0: the CP's DMA comes in as VID 0.
+ */
+&pcie_1 {
+	reset-gpios = <&gpf3 1 GPIO_ACTIVE_LOW>;
+	/* abox-pci: the call's voice, which the modem writes and ABOX reads */
+	memory-region = <&cp_rmem>, <&cp_rmem_2>, <&cp_msi_rmem>, <&abox_pci_rmem>;
+	memory-region-names = "ipc", "pktproc", "msi", "abox-pci";
+	samsung,s2mpu = <25 0>;
+	/* the VTS mailbox: the modem rings ABOX through it (stock abox-pci) */
+	samsung,s2mpu-mmio = <0x155a0000 0x1000>;
+	status = "okay";
+};
+
+&pwm {
+	samsung,pwm-outputs = <1>;
+	pinctrl-0 = <&vib_pwm>;
+	pinctrl-names = "default";
+	status = "okay";
+};
+
+&pinctrl_cmgp {
+	/* both amps' INTB, shared (stock spk-amp-int) */
+	amp_irq: amp-irq-pins {
+		samsung,pins = "gpm24-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	bt_en_pins: bt-en-pins {
+		samsung,pins = "gpm16-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV3>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+};
+
+&serial_1 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,qca6390-bt";
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+	};
+};
+
+&usi_uart_bt {
+	status = "okay";
+};
+
+&pinctrl_peric0 {
+	/* TOUT1, the vibrator's PWM */
+	vib_pwm: vib-pwm-pins {
+		samsung,pins = "gpp4-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};
+
+&pinctrl_peric1 {
+	/* ABOX UAIF2, the amp TDM bus (stock aud-i2s2-bus / -idle) */
+	aud_i2s2_bus: aud-i2s2-bus-pins {
+		samsung,pins = "gpb1-0", "gpb1-1", "gpb1-2", "gpb1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	aud_i2s2_idle: aud-i2s2-idle-pins {
+		samsung,pins = "gpb1-0", "gpb1-1", "gpb1-2", "gpb1-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	/* amp resets: held low (in reset) through the SoC's power-down mode */
+	spk_amp_reset: spk-amp-reset-pins {
+		samsung,pins = "gpb2-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	rcv_amp_reset: rcv-amp-reset-pins {
+		samsung,pins = "gpb2-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	wlan_en_pins: wlan-en-pins {
+		samsung,pins = "gpb0-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV4>;
+		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
+		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
 };
 
 &ufs_0 {
