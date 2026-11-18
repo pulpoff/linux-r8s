@@ -1134,6 +1134,18 @@ static const struct panfrost_compatible mediatek_mt8188_data = {
 	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
 };
 
+/*
+ * Exynos 990 (Mali-G77 MP11, not IO-coherent): the APM firmware sets the G3D voltage with each rate it is asked for
+ * (ACPM DVFS), so there is no regulator; the power domain is optional.
+ */
+static const struct panfrost_compatible exynos990_data = {
+	.num_supplies = 0,
+	.supply_names = NULL,
+	.num_pm_domains = 1,
+	.pm_domain_names = NULL,
+	.gpu_quirks = BIT(GPU_QUIRK_FORCE_AARCH64_PGTABLE),
+};
+
 static const struct panfrost_compatible mediatek_mt8192_data = {
 	.num_supplies = ARRAY_SIZE(default_supplies) - 1,
 	.supply_names = default_supplies,
@@ -1176,6 +1188,7 @@ static const struct of_device_id dt_match[] = {
 	{ .compatible = "mediatek,mt8186-mali", .data = &mediatek_mt8186_data },
 	{ .compatible = "mediatek,mt8188-mali", .data = &mediatek_mt8188_data },
 	{ .compatible = "mediatek,mt8192-mali", .data = &mediatek_mt8192_data },
+	{ .compatible = "samsung,exynos990-mali", .data = &exynos990_data },
 	{ .compatible = "mediatek,mt8370-mali", .data = &mediatek_mt8370_data },
 	{ .compatible = "allwinner,sun50i-h616-mali", .data = &default_pm_rt_data },
 	{}

@@ -228,6 +228,10 @@ static const struct panfrost_model gpu_models[] = {
 	GPU_MODEL(g31, 0x7003,
 		GPU_REV(g31, 1, 0)),
 
+	/* Exynos 990 (Galaxy S20 FE): GPU_ID 0x90800011, r0p1 */
+	GPU_MODEL(g77, 0x9000,
+		GPU_REV(g77, 0, 1)),
+
 	GPU_MODEL(g57, 0x9001,
 		GPU_REV(g57, 0, 0)),
 
