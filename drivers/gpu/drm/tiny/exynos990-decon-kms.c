@@ -123,6 +123,11 @@ struct decon_kms {
 	void __iomem *dsim;
 	unsigned int win;
 	int irq;
+	/*
+	 * The CRTC is on. While it is off the panel sleeps (or soon will) and sends no TE, so no frame starts and a
+	 * shadow update cannot latch: nothing waits for one then.
+	 */
+	bool active;
 
 	/* PSR: which frames the TE trigger still has to start (trig_lock) */
 	spinlock_t trig_lock;
@@ -199,8 +204,9 @@ static void decon_scanout(struct decon_kms *dk, u32 base, u32 in_con, u32 src_si
 {
 	u32 val;
 
-	/* the previous request must have been latched first (<= 1 frame) */
-	if (readl_poll_timeout(dk->decon + DECON_SHADOW_REG_UPDATE_REQ, val, !val, 100, 50000))
+	/* the previous request must have been latched first (<= 1 frame), when frames run */
+	if (dk->active &&
+	    readl_poll_timeout(dk->decon + DECON_SHADOW_REG_UPDATE_REQ, val, !val, 100, 50000))
 		dev_warn_ratelimited(dk->drm.dev, "shadow update stuck: 0x%08x (trigger 0x%08x, masked %d, held %d)\n",
 				     val, readl(dk->decon + DECON_HW_SW_TRIG_CONTROL), dk->trig_masked, dk->trig_held);
 
@@ -289,6 +295,7 @@ static void decon_pipe_enable(struct drm_simple_display_pipe *pipe,
 	};
 
 	drm_crtc_vblank_on_config(&pipe->crtc, &config);
+	to_decon(pipe->crtc.dev)->active = true;
 }
 
 static void decon_pipe_disable(struct drm_simple_display_pipe *pipe)
@@ -296,6 +303,8 @@ static void decon_pipe_disable(struct drm_simple_display_pipe *pipe)
 	struct decon_kms *dk = to_decon(pipe->crtc.dev);
 
 	drm_crtc_vblank_off(&pipe->crtc);
+	/* the panel is off by now (its disable comes first): no waiting for frames from here on */
+	dk->active = false;
 	/*
 	 * Our buffers may be freed now: scan out S-Boot's reserved one again.
 	 * Without a panel driver the panel cannot be switched off, so "off" is
