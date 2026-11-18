@@ -18,6 +18,7 @@ What works
 | Display | DRM/KMS on the pipeline the bootloader leaves running (DECON0, IDMA channel 0, DSIM0, EA8079 at 1080x2400 and 120 Hz in command mode with DSC): page flips at frame start, vblank events, fbcon. Frames go to the panel only when the picture changes; the panel refreshes itself in between |
 | Panel | the EA8079 as a DSI device of DECON0: brightness (256 steps, a backlight device), and screen off and on through sleep mode with the vendor init sequence on wake (off 235 ms, on 210 ms) |
 | GPU | Mali-G77 MP11 (GPU_ID 0x90800011) through Panfrost, with its power domain (the secure monitor restores its TZPC after each power-up) and its clock from the APM firmware (156 to 455 MHz, devfreq). Jobs run: an offscreen GLES2 test renders the same pixels as llvmpipe. Mesa 26.2 does not know the G77, so userspace is given it as the G57, the Valhall with the same architecture: GNOME Shell draws on it (OpenGL ES; Mesa's Vulkan driver does not cover this Valhall generation) |
+| Temperatures | the six SoC sensors (big, middle and little cores, GPU, ISP, NPU) through the APM firmware, as thermal zones and hwmon devices. Each zone shuts the phone down at 110 C; the GPU is slowed down from 88 C. The CPUs have no cooling yet (no cpufreq) |
 | Power firmware | ACPM, the APM firmware's IPC (mailbox and SRAM channels): DVFS rates for the GPU; it sets the voltage with each rate |
 | USB | device mode (dwc3): USB networking, ssh |
 | Storage | UFS 3.1: new Exynos 990 host variant and UFS PHY, HS-G4 x2 (about 1.1 GB/s reads); Debian boots from its own partition |
@@ -33,8 +34,8 @@ Not yet
 =======
 
 Touchscreen (the ZT7650 driver probes and the controller raises interrupts; finger reports are
-not checked yet), Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, SoC
-temperatures, cpufreq, CPU idle states and suspend.
+not checked yet), Wi-Fi (QCA6390 on PCIe), Bluetooth, sound, modem, cameras, sensors, cpufreq
+(and with it CPU cooling), CPU idle states and suspend.
 
 Changes on top of 7.2.15
 ========================
