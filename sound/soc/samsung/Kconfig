@@ -148,4 +148,31 @@ config SND_SOC_SAMSUNG_MIDAS_WM1811
 	help
 	  Say Y if you want to add support for SoC audio on the Midas boards.
 
+config SND_SOC_SAMSUNG_EXYNOS990_ABOX
+	tristate "Exynos 990 ABOX audio"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	help
+	  Plays and records PCM through the Exynos 990 ABOX block (RDMA to
+	  UAIF, UAIF to WDMA) without the ABOX firmware. For voice calls it
+	  boots the ABOX firmware from /lib/firmware, which then carries the
+	  modem's voice between the PCIe shared memory and the earpiece,
+	  loudspeaker and microphones.
+
+config SND_SOC_SAMSUNG_EXYNOS990_VTS_SLIF
+	tristate "Exynos 990 VTS serial LIF (digital microphones)"
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	help
+	  Brings the PDM microphones on the Exynos 990 VTS block to ABOX
+	  UAIF6 through the serial LIF, without the VTS firmware.
+
+config SND_SOC_SAMSUNG_R8S_AUDIO
+	tristate "SoC audio support for Galaxy S20 FE (CS35L40 amps)"
+	depends on I2C && (ARCH_EXYNOS || COMPILE_TEST)
+	select SND_SOC_SAMSUNG_EXYNOS990_ABOX
+	select SND_SOC_SAMSUNG_EXYNOS990_VTS_SLIF
+	select SND_SOC_CS35L41_I2C
+	help
+	  Say Y if you want to add support for the earpiece and loudspeaker
+	  amps of the Samsung Galaxy S20 FE (r8s).
+
 endif #SND_SOC_SAMSUNG
