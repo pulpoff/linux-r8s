@@ -202,6 +202,18 @@
 		regulator-always-on;
 	};
 
+	/* the touchscreen's 3.0 V: downstream "tsp_ldo_en" on gpm21-0 */
+	tsp_vdd: regulator-tsp-vdd {
+		compatible = "regulator-fixed";
+		regulator-name = "tsp-vdd";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		gpio = <&gpm21 0 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		/* downstream waits this long before powering the chip again */
+		off-on-delay-us = <300000>;
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -253,6 +265,12 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	tsp_int: tsp-int-pins {
+		samsung,pins = "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 
 	pmic_int: pmic-int-pins {
@@ -308,6 +326,19 @@
 &hsi2c_15 {
 	clock-frequency = <400000>;
 	status = "okay";
+
+	/* some r8s units carry an STM FTS5CU56A at 0x49 instead */
+	touchscreen@20 {
+		compatible = "zinitix,zt7650";
+		reg = <0x20>;
+		interrupt-parent = <&gpa1>;
+		interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&tsp_int>;
+		vdd-supply = <&tsp_vdd>;
+		touchscreen-size-x = <1080>;
+		touchscreen-size-y = <2400>;
+	};
 };
 
 /* S-Boot's running pipeline: page flips, and the EA8079 it lit as a DSI device */
