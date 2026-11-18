@@ -201,7 +201,8 @@ static void decon_scanout(struct decon_kms *dk, u32 base, u32 in_con, u32 src_si
 
 	/* the previous request must have been latched first (<= 1 frame) */
 	if (readl_poll_timeout(dk->decon + DECON_SHADOW_REG_UPDATE_REQ, val, !val, 100, 50000))
-		drm_warn_once(&dk->drm, "shadow update stuck: 0x%08x\n", val);
+		dev_warn_ratelimited(dk->drm.dev, "shadow update stuck: 0x%08x (trigger 0x%08x, masked %d, held %d)\n",
+				     val, readl(dk->decon + DECON_HW_SW_TRIG_CONTROL), dk->trig_masked, dk->trig_held);
 
 	writel(in_con, dk->idma + IDMA_IN_CON);
 	writel(src_size, dk->idma + IDMA_SRC_SIZE);
