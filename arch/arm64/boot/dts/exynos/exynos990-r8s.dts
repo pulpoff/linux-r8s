@@ -310,9 +310,14 @@
 	status = "okay";
 };
 
-/* S-Boot's running pipeline: page flips only, the EA8079 stays as S-Boot set it up */
+/* S-Boot's running pipeline: page flips, and the EA8079 it lit as a DSI device */
 &decon0 {
 	status = "okay";
+
+	panel@0 {
+		compatible = "samsung,ea8079-r8s";
+		reg = <0>;
+	};
 };
 
 &pmu_system_controller {
