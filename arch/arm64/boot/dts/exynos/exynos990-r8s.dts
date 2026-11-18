@@ -351,6 +351,10 @@
 	};
 };
 
+&gpu {
+	status = "okay";
+};
+
 &pmu_system_controller {
 	/*
 	 * S-Boot's reboot reason, PMU INFORM3 (downstream sec_reboot.c):

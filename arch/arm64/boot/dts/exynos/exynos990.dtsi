@@ -6,6 +6,7 @@
  */
 
 #include <dt-bindings/clock/samsung,exynos990.h>
+#include <dt-bindings/clock/samsung,exynos990-acpm.h>
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/soc/samsung,exynos-usi.h>
 
@@ -165,6 +166,40 @@
 		clock-output-names = "ufs_core";
 	};
 
+	firmware {
+		/*
+		 * The APM firmware: DVFS (it sets each domain's voltage with the rate), through the AP-to-APM mailbox and
+		 * the channels it lists in its SRAM. Its FREQ_GET does not answer, so a rate is known only once set.
+		 */
+		acpm_ipc: power-management {
+			compatible = "samsung,exynos990-acpm-ipc";
+			#clock-cells = <1>;
+			mboxes = <&ap2apm_mailbox>;
+			shmem = <&apm_sram>;
+
+			assigned-clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_G3D>;
+			assigned-clock-rates = <156000000>;
+		};
+	};
+
+	gpu_opp_table: opp-table-gpu {
+		compatible = "operating-points-v2";
+
+		/* the vendor's G3D levels up to its sustainable one; ACPM picks the voltage */
+		opp-156000000 {
+			opp-hz = /bits/ 64 <156000000>;
+		};
+		opp-260000000 {
+			opp-hz = /bits/ 64 <260000000>;
+		};
+		opp-377000000 {
+			opp-hz = /bits/ 64 <377000000>;
+		};
+		opp-455000000 {
+			opp-hz = /bits/ 64 <455000000>;
+		};
+	};
+
 	pmu-a55 {
 		compatible = "arm,cortex-a55-pmu";
 		interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>,
@@ -207,6 +242,14 @@
 
 		#address-cells = <1>;
 		#size-cells = <1>;
+
+		apm_sram: sram@2039000 {
+			compatible = "mmio-sram";
+			reg = <0x2039000 0x38000>;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			ranges = <0x0 0x2039000 0x38000>;
+		};
 
 		chipid@10000000 {
 			compatible = "samsung,exynos990-chipid",
@@ -514,14 +557,44 @@
 			};
 		};
 
+		pd_g3d: power-domain@15862200 {
+			compatible = "samsung,exynos990-pd";
+			reg = <0x15862200 0x20>;
+			#power-domain-cells = <0>;
+			label = "G3D";
+			/* the secure monitor restores the G3D's TZPC after a power-up ("need_smc" in the vendor DT) */
+			samsung,tzpc-base = <0x18410204>;
+		};
+
 		pmu_intr_gen: syscon@15870000 {
 			compatible = "samsung,exynos990-pmu-intr-gen", "syscon";
 			reg = <0x15870000 0x10000>;
 		};
 
+		ap2apm_mailbox: mailbox@15900000 {
+			compatible = "samsung,exynos990-mbox";
+			reg = <0x15900000 0x1000>;
+			interrupts = <GIC_SPI 41 IRQ_TYPE_LEVEL_HIGH>;
+			#mbox-cells = <0>;
+		};
+
 		pinctrl_cmgp: pinctrl@15c30000 {
 			compatible = "samsung,exynos990-pinctrl";
 			reg = <0x15c30000 0x1000>;
+		};
+
+		gpu: gpu@18500000 {
+			compatible = "samsung,exynos990-mali", "arm,mali-valhall-jm";
+			reg = <0x18500000 0x5000>;
+			interrupts = <GIC_SPI 301 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 302 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 300 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "job", "mmu", "gpu";
+			clocks = <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_G3D>;
+			power-domains = <&pd_g3d>;
+			operating-points-v2 = <&gpu_opp_table>;
+			#cooling-cells = <2>;
+			status = "disabled";
 		};
 
 		/*
