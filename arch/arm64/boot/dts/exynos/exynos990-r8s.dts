@@ -11,6 +11,7 @@
 #include <dt-bindings/leds/common.h>
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/interrupt-controller/irq.h>
+#include <dt-bindings/usb/pd.h>
 
 / {
 	model = "Samsung Galaxy S20 FE";
@@ -429,6 +430,28 @@
 	clock-frequency = <400000>;
 	status = "okay";
 
+	/*
+	 * The MAX77705's USB-C/PD block: sets the charger's input and charge
+	 * current from the source's PD contract, Rp current or BC1.2 type.
+	 * Sink limits as stock (pd_charging_charge_power, max input 9 V).
+	 */
+	usbc@25 {
+		compatible = "maxim,max77705-usbc";
+		reg = <0x25>;
+		interrupt-parent = <&max77705>;
+		interrupts = <3>;
+
+		connector {
+			compatible = "usb-c-connector";
+			power-role = "dual";
+			data-role = "dual";
+			try-power-role = "sink";
+			op-sink-microwatt = <15000000>;
+			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)
+				     PDO_FIXED(9000, 1670, 0)>;
+		};
+	};
+
 	fuel-gauge@36 {
 		compatible = "maxim,max77705-battery";
 		reg = <0x36>;
@@ -524,6 +547,83 @@
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
 		cirrus,asp-sdout-hiz = <3>;
+	};
+};
+
+/*
+ * The NTC thermistors stock reads on the general-purpose ADC, with stock's
+ * tables (battery,temp_table, chg_temp_table, usb_temp_table). The ADC has no
+ * vdd-supply on purpose: without one it reports no IIO scale, and the tables
+ * apply to its raw 12-bit counts as they do in the stock kernel.
+ */
+&adc {
+	status = "okay";
+};
+
+/ {
+	battery_ntc: thermal-sensor-battery {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 4>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3694 (-15000) 3580 (-10000) 3451 (-5000) 3305
+			(0) 3125 (5000) 2926 (10000) 2708 (15000) 2483
+			(20000) 2244 (25000) 2007 (30000) 1821 (35000) 1616
+			(40000) 1411 (45000) 1242 (50000) 1072 (55000) 937
+			(60000) 802 (65000) 649 (70000) 558 (75000) 482
+			(80000) 417 (85000) 387 (90000) 311>;
+	};
+
+	/* next to the MAX77705 charger */
+	charger_ntc: thermal-sensor-charger {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 3>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3617 (-15000) 3512 (-10000) 3381 (-5000) 3228
+			(0) 3047 (5000) 2850 (10000) 2634 (15000) 2410
+			(20000) 2177 (25000) 1937 (30000) 1757 (35000) 1555
+			(40000) 1353 (45000) 1185 (50000) 1018 (55000) 884
+			(60000) 751 (65000) 600 (70000) 499 (75000) 432
+			(80000) 366 (85000) 341 (90000) 221>;
+	};
+
+	/* at the USB-C receptacle */
+	usb_ntc: thermal-sensor-usb {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 1>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3653 (-15000) 3545 (-10000) 3421 (-5000) 3274
+			(0) 3101 (5000) 2910 (10000) 2701 (15000) 2480
+			(20000) 2247 (25000) 2012 (30000) 1830 (35000) 1626
+			(40000) 1423 (45000) 1251 (50000) 1079 (55000) 941
+			(60000) 803 (65000) 646 (70000) 552 (75000) 472
+			(80000) 402 (85000) 370 (90000) 268>;
+	};
+
+	/* read by max77705-usbc for its charge current limits */
+	thermal-zones {
+		battery-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+			thermal-sensors = <&battery_ntc>;
+		};
+
+		charger-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+			thermal-sensors = <&charger_ntc>;
+		};
+
+		usb-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+			thermal-sensors = <&usb_ntc>;
+		};
 	};
 };
 

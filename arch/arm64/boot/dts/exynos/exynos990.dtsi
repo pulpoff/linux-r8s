@@ -1093,6 +1093,20 @@
 			};
 		};
 
+		adc: adc@15c40000 {
+			compatible = "samsung,exynos990-adc";
+			reg = <0x15c40000 0x100>;
+			interrupts = <GIC_SPI 83 IRQ_TYPE_LEVEL_HIGH>;
+			/*
+			 * CMU_CMGP has no clock driver yet; the ADC's gates there
+			 * are on from boot and the oscillator stands in for them.
+			 */
+			clocks = <&oscclk>;
+			clock-names = "adc";
+			#io-channel-cells = <1>;
+			status = "disabled";
+		};
+
 		gpu: gpu@18500000 {
 			compatible = "samsung,exynos990-mali", "arm,mali-valhall-jm";
 			reg = <0x18500000 0x5000>;
