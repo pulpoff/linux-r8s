@@ -205,7 +205,7 @@ static int max77705_get_status(struct max77705_charger_data *chg, int *val)
 
 	regmap_field_read(chg->rfield[MAX77705_CHG_EN], &chg_en);
 	if (!chg_en) {
-		*val = POWER_SUPPLY_CHARGE_TYPE_NONE;
+		*val = POWER_SUPPLY_STATUS_NOT_CHARGING;
 		return 0;
 	}
 
