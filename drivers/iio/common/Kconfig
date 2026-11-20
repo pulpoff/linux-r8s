@@ -3,6 +3,7 @@
 # IIO common modules
 #
 
+source "drivers/iio/common/bcm4775_shub/Kconfig"
 source "drivers/iio/common/cros_ec_sensors/Kconfig"
 source "drivers/iio/common/hid-sensors/Kconfig"
 source "drivers/iio/common/inv_sensors/Kconfig"
