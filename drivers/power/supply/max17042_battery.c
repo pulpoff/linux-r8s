@@ -1217,6 +1217,18 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 		regmap_write(chip->regmap, MAX17047_FullSOCThr,
 			     MAX17042_BATTERY_FULL << 8);
 
+	/*
+	 * The MAX77705's gauge is a ModelGauge m5 like the MAX17055, with a current
+	 * alert window (IAlrtTh). The phone comes out of its boot chain with it at
+	 * 0x0003: an alert above 0 mA and below 240 mA, so at any current one of
+	 * them holds and ALRT never goes inactive; with alerts enabled that is an
+	 * interrupt storm (~350 a second). Samsung's driver never writes the
+	 * register and gets by because its first alert turns alerts off for good.
+	 * Open the window as at power-on, so only the SOC and voltage alerts count.
+	 */
+	if (of_device_is_compatible(dev->of_node, "maxim,max77705-battery"))
+		regmap_write(chip->regmap, MAX17055_IAlrtTh, 0x7f80);
+
 	if (irq) {
 		unsigned int flags = IRQF_ONESHOT | IRQF_SHARED | IRQF_PROBE_SHARED;
 
