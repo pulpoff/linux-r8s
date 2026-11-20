@@ -642,6 +642,17 @@ config CHARGER_MAX77705
 	help
 	  Say Y to enable support for the Maxim MAX77705 battery charger.
 
+config CHARGER_MAX77705_USBC
+	tristate "Maxim MAX77705 USB Type-C/PD input current"
+	depends on I2C && CHARGER_MAX77705
+	select REGMAP_I2C
+	help
+	  Say Y to let the MAX77705's USB Type-C/PD block set the charger's
+	  input and charge current from what the attached source offers:
+	  a USB PD contract (asking a PD source for a higher fixed voltage),
+	  the Type-C Rp current or the BC1.2 port type, with battery
+	  temperature limits on the charge current.
+
 config CHARGER_MAX77759
 	tristate "Maxim MAX77759 battery charger driver"
 	depends on MFD_MAX77759 && REGULATOR
