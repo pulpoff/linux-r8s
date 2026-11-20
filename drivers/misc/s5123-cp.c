@@ -176,6 +176,10 @@ static bool pm_log;
 module_param(pm_log, bool, 0644);
 MODULE_PARM_DESC(pm_log, "log every link down and up");
 
+static unsigned int wake_ms = 1000;
+module_param(wake_ms, uint, 0644);
+MODULE_PARM_DESC(wake_ms, "keep the system awake this long after the CP raises CP2AP_WAKE");
+
 /* the channels userspace gets, with their ring (link id) */
 static const struct {
 	const char *name;
@@ -260,6 +264,13 @@ struct s5123_cp {
 	bool link_on;		/* the EP can take a doorbell (msg_lock) */
 	bool db_reserved;	/* a doorbell waits for the link (msg_lock) */
 	unsigned long link_downs, link_ups, link_fails;
+	struct pci_saved_state *ep_state;	/* the EP's config space at the last link down */
+
+	/* system sleep: stock's PDA_ACTIVE, and CP2AP_WAKE edges held for resume */
+	struct gpio_desc *pda_active;
+	bool sleeping;		/* from our suspend to our resume (pm_lock) */
+	bool wake_deferred;	/* CP2AP_WAKE moved while sleeping (pm_lock) */
+	bool wake_armed;	/* CP2AP_WAKE is a wakeup interrupt now */
 
 	enum cp_state state;
 	u32 cp2ap_msg;
@@ -371,6 +382,13 @@ static void cp_link_down(struct s5123_cp *cp)
 		pci_save_state(rp);
 	pci_clear_master(pdev);
 	pci_save_state(pdev);
+	/*
+	 * Keep a copy of our own: across a system sleep the PCI core saves and
+	 * restores the endpoint as well, through a link that is down, and that
+	 * leaves all ones (or nothing) for the restore at the next link up.
+	 */
+	kfree(cp->ep_state);
+	cp->ep_state = pci_store_saved_state(pdev);
 	disable_irq(cp->irq_msg);
 	if (cp->irq_status >= 0)
 		disable_irq(cp->irq_status);
@@ -408,6 +426,8 @@ static int cp_link_up(struct s5123_cp *cp)
 		pci_restore_state(rp);
 	if (pci_set_power_state(cp->pdev, PCI_D0))
 		dev_warn_ratelimited(cp->dev, "no D0\n");
+	if (cp->ep_state)
+		pci_load_saved_state(cp->pdev, cp->ep_state);
 	pci_restore_state(cp->pdev);
 	pci_enable_wake(cp->pdev, PCI_D0, false);
 	if (pci_enable_device(cp->pdev))
@@ -440,6 +460,10 @@ static void cp_pm_work(struct work_struct *work)
 	mutex_lock(&cp->pm_lock);
 	if (!READ_ONCE(cp->pm_enabled) || !cp->pdev)
 		goto out;
+	if (cp->sleeping) {		/* the PCI side is suspended: after resume */
+		cp->wake_deferred = true;
+		goto out;
+	}
 	if (gpiod_get_value(cp->cp2ap_wake)) {
 		if (!cp->link_on)
 			up = !cp_link_up(cp);
@@ -463,6 +487,12 @@ static irqreturn_t cp_wake_irq(int irq, void *data)
 {
 	struct s5123_cp *cp = data;
 
+	/*
+	 * The CP wants the link: a call, an SMS, data. Keep the system up long
+	 * enough to answer it, and abort a suspend that is on its way.
+	 */
+	if (READ_ONCE(cp->pm_enabled) && gpiod_get_value(cp->cp2ap_wake))
+		pm_wakeup_dev_event(cp->dev, wake_ms, true);
 	queue_work(system_highpri_wq, &cp->pm_work);
 	return IRQ_HANDLED;
 }
@@ -473,6 +503,9 @@ static void cp_pm_enable(struct s5123_cp *cp)
 	if (!link_pm || cp->irq_wake <= 0 || READ_ONCE(cp->pm_enabled))
 		return;
 	WRITE_ONCE(cp->pm_enabled, true);
+	/* cp-boot.sh raised PDA_ACTIVE with the CP; from here a system sleep lowers it */
+	if (cp->pda_active && gpiod_direction_output(cp->pda_active, 1))
+		cp->pda_active = NULL;
 	if (!cp->wake_irq_on) {
 		enable_irq(cp->irq_wake);
 		cp->wake_irq_on = true;
@@ -1677,6 +1710,14 @@ static int s5123_cp_plat_probe(struct platform_device *plat)
 			cp->irq_wake = -1;
 		}
 	}
+	/* left as cp-boot.sh drives it until the CP is up (cp_pm_enable) */
+	cp->pda_active = devm_gpiod_get_optional(cp->dev, "pda-active", GPIOD_ASIS);
+	if (IS_ERR(cp->pda_active)) {
+		dev_warn(cp->dev, "no PDA_ACTIVE: %ld\n", PTR_ERR(cp->pda_active));
+		cp->pda_active = NULL;
+	}
+	if (cp->irq_wake > 0)
+		device_init_wakeup(cp->dev, true);
 
 	skb_queue_head_init(&cp->at_txq);
 	init_waitqueue_head(&cp->at_wq);
@@ -1718,13 +1759,74 @@ static void s5123_cp_plat_remove(struct platform_device *plat)
 	struct s5123_cp *cp = platform_get_drvdata(plat);
 
 	the_cp = NULL;
+	device_init_wakeup(cp->dev, false);
 	s5123_cp_unregister(cp);
+	kfree(cp->ep_state);
 }
+
+/*
+ * System sleep as stock's s5100 control does it (suspend/resume in its
+ * modem_ctrl): no sleep while the CP holds CP2AP_WAKE or the link is up, as
+ * it is using the link; PDA_ACTIVE low while the AP sleeps, so the CP knows
+ * to wake it only for what needs it; CP2AP_WAKE as a wakeup interrupt.
+ * Edges that come while the PCI side is suspended are acted on at resume.
+ */
+static int s5123_cp_suspend(struct device *dev)
+{
+	struct s5123_cp *cp = dev_get_drvdata(dev);
+
+	if (!READ_ONCE(cp->pm_enabled))
+		return 0;
+	flush_work(&cp->pm_work);
+	mutex_lock(&cp->pm_lock);
+	if (gpiod_get_value(cp->cp2ap_wake) || cp->link_on) {
+		mutex_unlock(&cp->pm_lock);
+		dev_info(dev, "the CP is using the link (cp2ap_wake %d, link %s): not now\n",
+			 gpiod_get_value(cp->cp2ap_wake), cp->link_on ? "up" : "down");
+		return -EBUSY;
+	}
+	cp->sleeping = true;
+	cp->wake_deferred = false;
+	if (cp->pda_active)
+		gpiod_set_value(cp->pda_active, 0);
+	mutex_unlock(&cp->pm_lock);
+	cp->wake_armed = device_may_wakeup(dev) && !enable_irq_wake(cp->irq_wake);
+	return 0;
+}
+
+static int s5123_cp_resume(struct device *dev)
+{
+	struct s5123_cp *cp = dev_get_drvdata(dev);
+	bool deferred;
+
+	if (cp->wake_armed) {
+		disable_irq_wake(cp->irq_wake);
+		cp->wake_armed = false;
+	}
+	mutex_lock(&cp->pm_lock);
+	if (!cp->sleeping) {
+		mutex_unlock(&cp->pm_lock);
+		return 0;
+	}
+	cp->sleeping = false;
+	deferred = cp->wake_deferred;
+	if (cp->pda_active)
+		gpiod_set_value(cp->pda_active, 1);
+	mutex_unlock(&cp->pm_lock);
+	if (pm_log || deferred)
+		dev_info(dev, "resume: cp2ap_wake %d%s\n", gpiod_get_value(cp->cp2ap_wake),
+			 deferred ? ", it moved while asleep" : "");
+	queue_work(system_highpri_wq, &cp->pm_work);
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(s5123_cp_pm_ops, s5123_cp_suspend, s5123_cp_resume);
 
 static struct platform_driver s5123_cp_plat_driver = {
 	.driver = {
 		.name = "s5123-cp",
 		.dev_groups = cp_groups,
+		.pm = pm_sleep_ptr(&s5123_cp_pm_ops),
 	},
 	.probe = s5123_cp_plat_probe,
 	.remove = s5123_cp_plat_remove,
@@ -1732,12 +1834,13 @@ static struct platform_driver s5123_cp_plat_driver = {
 
 static struct platform_device *s5123_cp_plat;
 
-/* stock dtbo cpif: gpio_ap2cp_wake_up gpg1-3, gpio_cp2ap_wake_up gpm30-0 */
+/* stock dtbo cpif: gpio_ap2cp_wake_up gpg1-3, gpio_cp2ap_wake_up gpm30-0, gpio_ap2cp_pda_active gpm25-0 */
 static struct gpiod_lookup_table s5123_cp_gpios = {
 	.dev_id = "s5123-cp",
 	.table = {
 		GPIO_LOOKUP("gpg1", 3, "ap2cp-wake", GPIO_ACTIVE_HIGH),
 		GPIO_LOOKUP("gpm30", 0, "cp2ap-wake", GPIO_ACTIVE_HIGH),
+		GPIO_LOOKUP("gpm25", 0, "pda-active", GPIO_ACTIVE_HIGH),
 		{ }
 	},
 };
