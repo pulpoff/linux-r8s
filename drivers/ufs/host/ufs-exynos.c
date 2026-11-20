@@ -101,6 +101,8 @@
 #define UFS_EXYNOSAUTOV920_RD_SHARABLE	BIT(2)
 #define UFS_EXYNOSAUTOV920_SHARABLE	(UFS_EXYNOSAUTOV920_WR_SHARABLE |\
 					 UFS_EXYNOSAUTOV920_RD_SHARABLE)
+/* Exynos 990: HSI1 sysreg +0x700, the stock DT's ufs-io-coherency mask/bits 0xc00000 */
+#define UFS_EXYNOS990_SHARABLE		(BIT(23) | BIT(22))
 #define UFS_GS101_WR_SHARABLE		BIT(1)
 #define UFS_GS101_RD_SHARABLE		BIT(0)
 #define UFS_GS101_SHARABLE		(UFS_GS101_WR_SHARABLE | \
@@ -215,14 +217,18 @@ static inline void exynos_ufs_ungate_clks(struct exynos_ufs *ufs)
 
 static int exynos_ufs_shareability(struct exynos_ufs *ufs)
 {
-	/* IO Coherency setting */
-	if (ufs->sysreg) {
-		return regmap_update_bits(ufs->sysreg,
-					  ufs->iocc_offset,
-					  ufs->iocc_mask, ufs->iocc_val);
-	}
+	unsigned int before = 0, after = 0;
+	int ret;
 
-	return 0;
+	/* IO Coherency setting */
+	if (!ufs->sysreg)
+		return 0;
+	regmap_read(ufs->sysreg, ufs->iocc_offset, &before);
+	ret = regmap_update_bits(ufs->sysreg, ufs->iocc_offset, ufs->iocc_mask, ufs->iocc_val);
+	regmap_read(ufs->sysreg, ufs->iocc_offset, &after);
+	dev_info(ufs->hba->dev, "io coherency: sysreg +%#x %#x -> %#x (mask %#x)\n",
+		 ufs->iocc_offset, before, after, ufs->iocc_mask);
+	return ret;
 }
 
 static int gs101_ufs_drv_init(struct exynos_ufs *ufs)
@@ -2282,6 +2288,12 @@ static const struct exynos_ufs_drv_data exynosauto_ufs_drvs = {
 
 static const struct exynos_ufs_drv_data exynos990_ufs_drvs = {
 	.uic_attr		= &exynos990_uic_attr,
+	/*
+	 * The controller's AXI masters snoop (stock: dma-coherent + these bits). Left as the boot loader set them while
+	 * Linux mapped the descriptors non-coherent, it read stale UTRDs: intermittent "OCS error = 1" (a WRITE UPIU
+	 * under a READ descriptor) and UFS errors that set off the error handler.
+	 */
+	.iocc_mask		= UFS_EXYNOS990_SHARABLE,
 	.quirks			= UFSHCD_QUIRK_PRDT_BYTE_GRAN |
 				  UFSHCI_QUIRK_SKIP_RESET_INTR_AGGR |
 				  UFSHCD_QUIRK_BROKEN_OCS_FATAL_ERROR |
