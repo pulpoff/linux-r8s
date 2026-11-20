@@ -73,6 +73,7 @@ enum { CCI_NOT_UFP, CCI_DEFAULT, CCI_1_5A, CCI_3_0A };
 #define RECHECK_MS			500	/* after asking for a new PDO */
 #define EVENT_MS			20	/* an event came in during an update */
 #define TEMP_POLL_MS			30000
+#define TEMP_WAIT_MS			60000	/* for the battery's thermal zone to register */
 
 /* the input current per BC1.2 port type when Rp asks for nothing more */
 #define SDP_UA				500000
@@ -142,6 +143,7 @@ struct max77705_usbc {
 	/* what the charger was given */
 	int zone;
 	bool temp_warned;
+	unsigned long probed;		/* jiffies */
 	const char *temp_src;		/* where the temperature came from last */
 	int ilim_ua, cc_ua;
 	int saved_ilim_ua, saved_cc_ua;
@@ -225,23 +227,47 @@ static int max77705_usbc_opcode(struct max77705_usbc *u, u8 op, const u8 *data,
 	return 0;
 }
 
+/* What the source offers, once per attach (and again if it changes its offer) */
+static void max77705_usbc_log_pdos(struct max77705_usbc *u)
+{
+	unsigned int i;
+
+	for (i = 0; i < u->npdos; i++) {
+		u32 pdo = u->pdos[i];
+
+		if (pdo_type(pdo) == PDO_TYPE_FIXED)
+			dev_info(u->dev, "source PDO %u: fixed %u mV %u mA\n", i + 1,
+				 pdo_fixed_voltage(pdo), pdo_max_current(pdo));
+		else if (pdo_type(pdo) == PDO_TYPE_APDO && pdo_apdo_type(pdo) == APDO_TYPE_PPS)
+			dev_info(u->dev, "source PDO %u: PPS %u-%u mV %u mA\n", i + 1,
+				 pdo_pps_apdo_min_voltage(pdo), pdo_pps_apdo_max_voltage(pdo),
+				 pdo_pps_apdo_max_current(pdo));
+		else
+			dev_info(u->dev, "source PDO %u: %#010x\n", i + 1, pdo);
+	}
+}
+
 /* Reads the source's PDOs and which one the contract is on. */
 static int max77705_usbc_read_srccap(struct max77705_usbc *u)
 {
 	u8 resp[2 + 4 * MAX_SRC_PDOS];
-	unsigned int i;
+	u32 old[MAX_SRC_PDOS];
+	unsigned int i, nold = u->npdos;
 	int ret;
 
 	ret = max77705_usbc_opcode(u, OP_CURRENT_SRCCAP, NULL, 0, resp, sizeof(resp) - 1);
 	if (ret)
 		return ret;
 
+	memcpy(old, u->pdos, sizeof(old));
 	u->sel = (resp[1] >> 3) & 7;
 	u->npdos = min_t(unsigned int, resp[1] & 7, MAX_SRC_PDOS);
 	for (i = 0; i < u->npdos; i++)
 		u->pdos[i] = get_unaligned_le32(&resp[2 + 4 * i]);
 	if (u->sel > u->npdos)
 		u->sel = 0;
+	if (u->npdos != nold || memcmp(old, u->pdos, u->npdos * sizeof(u32)))
+		max77705_usbc_log_pdos(u);
 	return 0;
 }
 
@@ -403,7 +429,8 @@ static void max77705_usbc_apply(struct max77705_usbc *u)
 				dev_info(u->dev, "battery %d.%d degC: %s\n", temp / 10,
 					 abs(temp % 10), max77705_usbc_zones[zone].name);
 			u->zone = zone;
-		} else if (!u->temp_warned) {
+		} else if (!u->temp_warned &&
+			   time_after(jiffies, u->probed + msecs_to_jiffies(TEMP_WAIT_MS))) {
 			dev_warn(u->dev, "no battery temperature: no temperature limits\n");
 			u->temp_warned = true;
 		}
@@ -554,6 +581,13 @@ static void max77705_usbc_work(struct work_struct *work)
 	u->event = false;
 	max77705_usbc_update(u);
 	next = u->irq > 0 ? (u->online ? TEMP_POLL_MS : 0) : POLL_MS;
+	/*
+	 * Built in, this probes before the ADC and its thermal zones: look for
+	 * the battery temperature again soon rather than at the next poll.
+	 */
+	if (u->online && !u->temp_src &&
+	    time_before(jiffies, u->probed + msecs_to_jiffies(TEMP_WAIT_MS)))
+		next = min_t(unsigned long, next ?: POLL_MS, POLL_MS);
 	if (u->recheck) {
 		u->recheck = false;
 		next = RECHECK_MS;
@@ -689,6 +723,7 @@ static int max77705_usbc_probe(struct i2c_client *client)
 	if (!u)
 		return -ENOMEM;
 	u->dev = dev;
+	u->probed = jiffies;
 	u->zone = BAT_NORMAL;
 	u->ilim_ua = -1;
 	u->cc_ua = -1;
