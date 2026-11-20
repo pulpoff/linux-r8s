@@ -130,6 +130,7 @@ static int max17042_get_temperature(struct max17042_chip *chip, int *temp)
 
 static int max17042_get_status(struct max17042_chip *chip, int *status)
 {
+	union power_supply_propval val;
 	int ret, charge_full, charge_now;
 	int current_now;
 	u32 data;
@@ -141,6 +142,20 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 	}
 	if (ret == 0) {
 		*status = POWER_SUPPLY_STATUS_DISCHARGING;
+		return 0;
+	}
+
+	/*
+	 * A charger that has ended the charge says so before FullCAP catches
+	 * up, and with a float voltage below the one the gauge learnt as full
+	 * FullCAP never does: the small current the battery then reads, an
+	 * offset or a load peak, would otherwise make it "discharging".
+	 */
+	if (!power_supply_get_property_from_supplier(chip->battery,
+						     POWER_SUPPLY_PROP_STATUS, &val) &&
+	    (val.intval == POWER_SUPPLY_STATUS_FULL ||
+	     val.intval == POWER_SUPPLY_STATUS_NOT_CHARGING)) {
+		*status = val.intval;
 		return 0;
 	}
 
