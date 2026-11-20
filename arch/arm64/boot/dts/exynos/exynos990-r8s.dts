@@ -19,6 +19,15 @@
 	#address-cells = <2>;
 	#size-cells = <2>;
 
+	aliases {
+		/*
+		 * Fixed SPI bus numbers: the modem's CP boot SPI is spi0.0 for
+		 * s5123-modem (spidev), whatever else gets an SPI controller.
+		 */
+		spi0 = &spi_16;
+		spi1 = &spi_14;
+	};
+
 	chosen {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -327,6 +336,13 @@
 				regulator-max-microvolt = <3300000>;
 			};
 
+			/* the sensor hub's 1.8 V (stock vdd_mcu_1p8), switched by its driver */
+			ldo21m: ldo21m {
+				regulator-name = "vdd-mcu-1p8";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+			};
+
 			/* the sub (top) microphone's 1.8 V (stock sub_micbias_1p8) */
 			ldo13m: ldo13m {
 				regulator-name = "sub-micbias";
@@ -342,6 +358,26 @@
 };
 
 &pinctrl_alive {
+	/* the sensor hub's HOST_REQ: it has data for the AP */
+	shub_host_req: shub-host-req-pins {
+		samsung,pins = "gpa1-7";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	/* AP_SLEEP (stock "ssp-batch-wake-irq"), an AP output the hub reads */
+	shub_ap_sleep: shub-ap-sleep-pins {
+		samsung,pins = "gpa0-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	shub_int: shub-int-pins {
+		samsung,pins = "gpa4-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
 	/* open drain: without the pull-up the line reads low and the interrupt storms */
 	pmic_irq: pmic-irq-pins {
 		samsung,pins = "gpa0-1";
@@ -422,6 +458,9 @@
 			compatible = "maxim,max77705-haptic";
 			haptic-supply = <&ldo27m>;
 			pwms = <&pwm 1 38000 0>;
+			/* this motor barely moves below ~75 % duty or in under 15 ms */
+			maxim,min-magnitude-percent = <50>;
+			maxim,min-on-ms = <15>;
 		};
 	};
 
@@ -530,6 +569,39 @@
 		compatible = "samsung,s5123-boot-spi";
 		reg = <0>;
 		spi-max-frequency = <2166667>;
+	};
+};
+
+/*
+ * The BCM4775 B1 sensor hub + GNSS (stock "ssp,BCM4773"), on USI14's SPI like
+ * the S10e's B0 on its spi17: same driver, its own RAM patch. SPI mode 3 at
+ * 25 MHz, chip select as a GPIO so it stays down through a whole transfer.
+ */
+&usi_spi14 {
+	status = "okay";
+};
+
+&spi_14 {
+	pinctrl-0 = <&spi14_bus &spi14_cs>;
+	cs-gpios = <&gpp3 7 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	sensorhub@0 {
+		compatible = "samsung,r8s-sensorhub", "brcm,bcm4775-shub";
+		reg = <0>;
+		spi-max-frequency = <25000000>;
+		spi-cpol;
+		spi-cpha;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&shub_host_req &shub_ap_sleep &shub_int
+			     &shub_pwr_en &shub_mcu_req &shub_mcu_resp>;
+		vdd-supply = <&ldo21m>;
+		pwr-en-gpios = <&gpp6 3 GPIO_ACTIVE_HIGH>;
+		mcu-req-gpios = <&gpb0 5 GPIO_ACTIVE_HIGH>;
+		mcu-resp-gpios = <&gpm19 0 GPIO_ACTIVE_HIGH>;
+		host-req-gpios = <&gpa1 7 GPIO_ACTIVE_HIGH>;
+		ap-sleep-gpios = <&gpa0 5 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -643,6 +715,12 @@
 };
 
 &pinctrl_cmgp {
+	shub_mcu_resp: shub-mcu-resp-pins {
+		samsung,pins = "gpm19-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
 	/* both amps' INTB, shared (stock spk-amp-int) */
 	amp_irq: amp-irq-pins {
 		samsung,pins = "gpm24-0";
@@ -684,6 +762,19 @@
 };
 
 &pinctrl_peric1 {
+	/* the sensor hub + GNSS chip's power (stock "ssp-gps-pwr-en") */
+	shub_pwr_en: shub-pwr-en-pins {
+		samsung,pins = "gpp6-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	shub_mcu_req: shub-mcu-req-pins {
+		samsung,pins = "gpb0-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
 	/* ABOX UAIF2, the amp TDM bus (stock aud-i2s2-bus / -idle) */
 	aud_i2s2_bus: aud-i2s2-bus-pins {
 		samsung,pins = "gpb1-0", "gpb1-1", "gpb1-2", "gpb1-3";

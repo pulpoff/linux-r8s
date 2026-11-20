@@ -700,6 +700,35 @@
 			};
 		};
 
+		/* PERIC0 USI14 ("spi14" downstream, mode word usi_14 = sysreg +0x1044) */
+		usi_spi14: usi@106500c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x106500c0 0x20>;
+			ranges;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			clocks = <&cmu_peric0 CLK_GOUT_PERIC0_TOP1_PCLK_5>,
+				 <&cmu_peric0 CLK_GOUT_PERIC0_TOP1_IPCLK_5>;
+			clock-names = "pclk", "ipclk";
+			samsung,sysreg = <&sysreg_peric0 0x1044>;
+			samsung,mode = <USI_MODE_SPI>;
+			status = "disabled";
+
+			spi_14: spi@10650000 {
+				compatible = "samsung,exynos850-spi";
+				reg = <0x10650000 0x30>;
+				interrupts = <GIC_SPI 413 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&cmu_peric0 CLK_GOUT_PERIC0_TOP1_PCLK_5>,
+					 <&cmu_peric0 CLK_GOUT_PERIC0_TOP1_IPCLK_5>;
+				clock-names = "spi", "spi_busclk0";
+				pinctrl-names = "default";
+				pinctrl-0 = <&spi14_bus &spi14_cs_func>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
 		/*
 		 * USI15's dedicated I2C channel (vendor hsi2c31, the speaker amps).
 		 * Its ports are TOP1 IPCLK/PCLK 8: the last of the four I2C halves
@@ -916,6 +945,8 @@
 			phys = <&ufs_0_phy>;
 			phy-names = "ufs-phy";
 			samsung,sysreg = <&sysreg_hsi1 0x700>;
+			/* the stock DT's: descriptors and buffers snooped (io coherency bits set by the driver) */
+			dma-coherent;
 			status = "disabled";
 		};
 
