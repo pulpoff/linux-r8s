@@ -299,6 +299,29 @@ static const u32 abox_call_mux[][2] = {
 /* VSS_RXBRIDGE, BD_SRCCOM4, BD_MIXER, RDMA8, WDMA4, AUDIO_DAMPER0, VSS_TXADAPTER, VSSIF_TX */
 static const u32 abox_call_en[] = { 231, 214, 124, 148, 243, 234, 279 };	/* 223: "invalid ctrl" */
 
+/*
+ * Stock's speech enhancement in the call (mixer_paths "route-vssadapter-txse1-
+ * txse2", "route-vssrxif-vssbridge-rxse-to-srccom4", OEM NXP Mode 1): 1 puts
+ * MCD_TXSE1 -> MCD_TXSE2 between the adapter and the modem, which have both
+ * mics and the BD_MIXER reference to cancel the echo and the noise against;
+ * 2 also MCD_RXSE on the downlink. Each call keeps the level it started with.
+ */
+static int call_effects;
+module_param(call_effects, int, 0644);
+MODULE_PARM_DESC(call_effects, "call speech enhancement: 0 none, 1 uplink (echo, noise), 2 uplink and downlink");
+#define CTL_OEM_NXP_MODE		1030
+static const u32 abox_call_tx_mux[][2] = {
+	{ 292, 47 },	/* MCD_TXSE1_A = VSS_TXADAPTER */
+	{ 295, 66 },	/* MCD_TXSE2_A = MCD_TXSE1 */
+	{ 280, 67 },	/* VSSIF_TX_A = MCD_TXSE2 */
+};
+static const u32 abox_call_tx_en[] = { 291, 294 };	/* MCD_TXSE1, MCD_TXSE2 */
+static const u32 abox_call_rx_mux[][2] = {
+	{ 304, 46 },	/* MCD_RXSE_A = VSS_RXBRIDGE */
+	{ 215, 70 },	/* BD_SRCCOM4_A = MCD_RXSE */
+};
+static const u32 abox_call_rx_en[] = { 303 };		/* MCD_RXSE */
+
 /* fallback: report the period timer's position instead of the DMA's */
 static bool swpos;
 module_param(swpos, bool, 0644);
@@ -323,6 +346,10 @@ module_param(fw_rdma_bits, int, 0644);
 MODULE_PARM_DESC(fw_rdma_bits, "RDMA8 sample width under the firmware: 24 (the mixer's), 16 or 32");
 
 /* RDMA8's CTRL0 format for that width: (ch - 1) | width code << 3 */
+static int fw_rdma_period = 240;
+module_param(fw_rdma_period, int, 0644);
+MODULE_PARM_DESC(fw_rdma_period, "RDMA8 period in frames under the firmware (its mixer writes 240)");
+
 static u32 abox_fw_rdma_format(void)
 {
 	switch (fw_rdma_bits) {
@@ -397,6 +424,9 @@ struct abox {
 		struct delayed_work rdma_work;	/* keeps the call's RDMA8 running */
 		bool rdma_watch;
 		unsigned int rdma_kicks;
+		bool speaker;			/* "Call Speaker Switch" */
+		int effects;			/* the call's call_effects */
+		bool mic_off;			/* "Call Mic Switch" off */
 		struct abox_fw_buf {		/* firmware-owned DMA buffers */
 			void *cpu;
 			dma_addr_t pa;
@@ -1863,9 +1893,14 @@ static void abox_fw_dma_open(struct abox *abox, bool cap)
 	u32 frame = 2 * (bits == 16 ? 2 : 4);	/* 2 ch, S24 sits in 32 bits */
 
 	abox_fw_pcm(abox, cap, ch, PCM_OPEN, 0, 0, 0, 0, false);
-	/* RDMA8 480 frames (10 ms) a period; WDMA4 S16 2 ch 240 frames */
+	/*
+	 * 240 frames (5 ms) a period for both, the firmware's own step: its BD
+	 * mixer writes 1920 bytes (240 S24-in-32 stereo frames) at the start of
+	 * each RDMA8 period, so with 480-frame periods the second half of every
+	 * period played stale data ("rdma-8 buffer underrun" every 10 ms).
+	 */
 	abox_fw_pcm(abox, cap, ch, PCM_SET_BUFFER, abox->fw.buf[cap].iova,
-		    cap ? 960 : 480 * frame, 4, 0, false);
+		    cap ? 960 : fw_rdma_period * frame, 4, 0, false);
 	abox_fw_pcm(abox, cap, ch, PCM_HW_PARAMS, 48000, bits, 2, 0, false);
 	/*
 	 * BIT_CTRL0 DST_BIT_WIDTH, the width the DMA hands to SPUS/takes from
@@ -1891,6 +1926,16 @@ static int abox_fw_dma_go(struct abox *abox, bool cap)
  * trigger, and if that does not take, enable the DMA (its buffer is the
  * firmware's, behind SysMMU).
  */
+/* WDMA4, the call's microphones: unity, or 0 while "Call Mic Switch" is off */
+static void abox_fw_mic_apply(struct abox *abox)
+{
+	struct abox_dma *dma = &abox->dma[SNDRV_PCM_STREAM_CAPTURE];
+	u32 want = READ_ONCE(abox->fw.mic_off) ? 0 : 0x800000;
+
+	if (abox_dma_read(dma, ABOX_DMA_VOL_FACTOR) != want)
+		abox_dma_write(dma, ABOX_DMA_VOL_FACTOR, want);
+}
+
 static void abox_fw_rdma_work(struct work_struct *work)
 {
 	struct abox *abox = container_of(work, struct abox, fw.rdma_work.work);
@@ -1928,6 +1973,8 @@ static void abox_fw_rdma_work(struct work_struct *work)
 					     abox->fw.rdma_kicks);
 		}
 	}
+	/* the firmware programs WDMA4 itself; a muted call keeps its volume at 0 */
+	abox_fw_mic_apply(abox);
 	if (READ_ONCE(abox->fw.rdma_watch))
 		schedule_delayed_work(&abox->fw.rdma_work, msecs_to_jiffies(50));
 }
@@ -1979,11 +2026,25 @@ static int abox_fw_route(struct abox *abox, int route, bool speaker)
 	abox_fw_ctl1(abox, GID_C, CTL_PATH_CHANGE_ID, 12);
 	for (i = 0; i < ARRAY_SIZE(abox_call_mux); i++)
 		abox_fw_ctl1(abox, GID_W, abox_call_mux[i][0], abox_call_mux[i][1]);
+	abox->fw.effects = clamp(READ_ONCE(call_effects), 0, 2);
+	if (abox->fw.effects) {
+		abox_fw_ctl1(abox, GID_C, CTL_OEM_NXP_MODE, 1);
+		for (i = 0; i < ARRAY_SIZE(abox_call_tx_mux); i++)
+			abox_fw_ctl1(abox, GID_W, abox_call_tx_mux[i][0], abox_call_tx_mux[i][1]);
+	}
+	if (abox->fw.effects > 1)
+		for (i = 0; i < ARRAY_SIZE(abox_call_rx_mux); i++)
+			abox_fw_ctl1(abox, GID_W, abox_call_rx_mux[i][0], abox_call_rx_mux[i][1]);
+	abox->fw.speaker = speaker;
 	abox_fw_sys(abox, ABOX_SET_TYPE, speaker, 0, 0, NULL, 0, false);
 	abox_fw_dma_open(abox, false);
 	abox_fw_dma_open(abox, true);
 	for (i = 0; i < ARRAY_SIZE(abox_call_en); i++)	/* DAPM PRE_PMU */
 		abox_fw_ctl1(abox, GID_W, abox_call_en[i], 1);
+	for (i = 0; abox->fw.effects && i < ARRAY_SIZE(abox_call_tx_en); i++)
+		abox_fw_ctl1(abox, GID_W, abox_call_tx_en[i], 1);
+	for (i = 0; abox->fw.effects > 1 && i < ARRAY_SIZE(abox_call_rx_en); i++)
+		abox_fw_ctl1(abox, GID_W, abox_call_rx_en[i], 1);
 	abox_fw_dma_go(abox, false);
 	ret = abox_fw_dma_go(abox, true);
 	abox->fw.rdma_kicks = 0;
@@ -2009,6 +2070,10 @@ static void abox_fw_hangup(struct abox *abox)
 	if (route == ROUTE_CALL) {
 		for (i = 0; i < ARRAY_SIZE(abox_call_en); i++)
 			abox_fw_ctl1(abox, GID_W, abox_call_en[i], 0);
+		for (i = 0; abox->fw.effects && i < ARRAY_SIZE(abox_call_tx_en); i++)
+			abox_fw_ctl1(abox, GID_W, abox_call_tx_en[i], 0);
+		for (i = 0; abox->fw.effects > 1 && i < ARRAY_SIZE(abox_call_rx_en); i++)
+			abox_fw_ctl1(abox, GID_W, abox_call_rx_en[i], 0);
 	} else {
 		abox_fw_ctl1(abox, GID_W, W_RDMA8, 0);
 		abox_fw_ctl1(abox, GID_W, route == ROUTE_TONE ? W_TONEGEN : W_WDMA4, 0);
@@ -2019,6 +2084,11 @@ static void abox_fw_hangup(struct abox *abox)
 	if (route == ROUTE_CALL) {
 		for (i = 0; i < ARRAY_SIZE(abox_call_mux); i++)
 			abox_fw_ctl1(abox, GID_W, abox_call_mux[i][0], 0);
+		for (i = 0; abox->fw.effects && i < ARRAY_SIZE(abox_call_tx_mux); i++)
+			abox_fw_ctl1(abox, GID_W, abox_call_tx_mux[i][0], 0);
+		for (i = 0; abox->fw.effects > 1 && i < ARRAY_SIZE(abox_call_rx_mux); i++)
+			abox_fw_ctl1(abox, GID_W, abox_call_rx_mux[i][0], 0);
+		abox->fw.effects = 0;
 		abox_fw_sys(abox, ABOX_SET_MODE, 0, 0, 0, NULL, 0, false);
 	} else {
 		abox_fw_ctl1(abox, GID_W, W_RDMA8_A, 0);
@@ -2065,10 +2135,11 @@ static int abox_fw_show(struct seq_file *s, void *unused)
 	regmap_read(abox->fw.pmu, PMU_AUD_CPU0_STANDBY, &p[1]);
 	regmap_read(abox->fw.pmu, PMU_AUD_CPU1_POWER, &p[2]);
 	regmap_read(abox->fw.pmu, PMU_AUD_CPU1_STANDBY, &p[3]);
-	seq_printf(s, "%s, version %08x, GIC %s, route %d, vss %d\n",
+	seq_printf(s, "%s, version %08x, GIC %s, route %d, vss %d, effects %d, speaker %d, mic %s\n",
 		   abox->fw.running ? "running" : "stopped", abox->fw.version,
 		   abox->fw.secure ? "secure (SMC)" : "plain", abox->fw.route,
-		   abox->fw.vss);
+		   abox->fw.vss,
+		   abox->fw.effects, abox->fw.speaker, abox->fw.mic_off ? "off" : "on");
 	seq_printf(s, "PC %08x %08x; PMU cpu0 %x/%x cpu1 %x/%x; cpu %u Hz\n",
 		   abox_readl(abox, ABOX_CORE0_PC), abox_readl(abox, ABOX_CORE1_PC),
 		   p[0], p[1], p[2], p[3], abox_cpu_hz(abox));
@@ -2175,7 +2246,9 @@ static ssize_t abox_fw_write(struct file *file, const char __user *ubuf,
 	} else if (!strcmp(cmd, "loop")) {
 		ret = abox_fw_route(abox, ROUTE_LOOP, false);
 	} else if (!strcmp(cmd, "call")) {
-		ret = abox_fw_route(abox, ROUTE_CALL, !strcmp(arg, "speaker"));
+		/* "call speaker", "call handset", or "call" as "Call Speaker Switch" says */
+		ret = abox_fw_route(abox, ROUTE_CALL, !strcmp(arg, "speaker") ||
+				    (strcmp(arg, "handset") && abox->fw.speaker));
 	} else if (!strcmp(cmd, "hangup")) {
 		abox_fw_hangup(abox);
 	} else {
@@ -2405,8 +2478,61 @@ static int abox_regs_show(struct seq_file *s, void *unused)
 }
 DEFINE_SHOW_ATTRIBUTE(abox_regs);
 
+/*
+ * The call's controls, for the session's call-audio service (callaudiod's
+ * EnableSpeaker and MuteMic): which device the firmware tunes the call for
+ * (its echo canceller and noise suppression), and the microphones on or off.
+ * Both hold across calls; the amps' volumes stay the amps' own controls.
+ */
+static int abox_call_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *uc)
+{
+	struct abox *abox = snd_soc_component_get_drvdata(snd_kcontrol_chip(kcontrol));
+
+	uc->value.integer.value[0] = kcontrol->private_value ? !READ_ONCE(abox->fw.mic_off) :
+							       READ_ONCE(abox->fw.speaker);
+	return 0;
+}
+
+static int abox_call_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *uc)
+{
+	struct abox *abox = snd_soc_component_get_drvdata(snd_kcontrol_chip(kcontrol));
+	bool on = uc->value.integer.value[0];
+	int ret = 0;
+
+	mutex_lock(&abox->fw_lock);
+	if (kcontrol->private_value) {			/* Call Mic Switch */
+		ret = READ_ONCE(abox->fw.mic_off) == on;
+		WRITE_ONCE(abox->fw.mic_off, !on);
+		if (abox->fw.running && abox->fw.route == ROUTE_CALL)
+			abox_fw_mic_apply(abox);
+	} else {					/* Call Speaker Switch */
+		ret = abox->fw.speaker != on;
+		abox->fw.speaker = on;
+		if (ret && abox->fw.running && abox->fw.route == ROUTE_CALL &&
+		    abox_fw_sys(abox, ABOX_SET_TYPE, on, 0, 0, NULL, 0, false))
+			dev_warn(abox->dev, "the firmware did not take device type %d\n", on);
+	}
+	mutex_unlock(&abox->fw_lock);
+	return ret;
+}
+
+static const struct snd_kcontrol_new abox_controls[] = {
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = "Call Speaker Switch",
+		.info = snd_ctl_boolean_mono_info, .get = abox_call_get,
+		.put = abox_call_put, .private_value = 0,
+	},
+	{
+		.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = "Call Mic Switch",
+		.info = snd_ctl_boolean_mono_info, .get = abox_call_get,
+		.put = abox_call_put, .private_value = 1,
+	},
+};
+
 static const struct snd_soc_component_driver abox_component = {
 	.name		= "exynos990-abox",
+	.controls	= abox_controls,
+	.num_controls	= ARRAY_SIZE(abox_controls),
 	.open		= abox_pcm_open,
 	.close		= abox_pcm_close,
 	.hw_params	= abox_pcm_hw_params,
