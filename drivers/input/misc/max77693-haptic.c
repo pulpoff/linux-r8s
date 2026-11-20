@@ -11,11 +11,13 @@
 
 #include <linux/err.h>
 #include <linux/init.h>
+#include <linux/ktime.h>
 #include <linux/i2c.h>
 #include <linux/regmap.h>
 #include <linux/input.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/property.h>
 #include <linux/pwm.h>
 #include <linux/slab.h>
 #include <linux/string_choices.h>
@@ -28,6 +30,7 @@
 #include <linux/mfd/max77843-private.h>
 
 #define MAX_MAGNITUDE_SHIFT	16
+#define MAX_MAGNITUDE		0xffff
 
 enum max77693_haptic_motor_type {
 	MAX77693_HAPTIC_ERM = 0,
@@ -60,11 +63,27 @@ struct max77693_haptic {
 	bool suspend_state;
 	unsigned int magnitude;
 	unsigned int pwm_duty;
+	u32 min_magnitude_pct;		/* the weakest pulse the motor still makes felt */
+	u32 min_on_ms;			/* the shortest it spins for */
+	bool playing;
+	ktime_t on_since;
 	enum max77693_haptic_motor_type type;
 	enum max77693_haptic_pulse_mode mode;
 
-	struct work_struct work;
+	struct delayed_work work;
 };
+
+/*
+ * A motor that barely moves at low duty or in a few ms makes weak feedback go
+ * missing: the "maxim,min-magnitude-percent" and "maxim,min-on-ms" properties
+ * lift every pulse above both. These parameters override them (-1: the DT's).
+ */
+static int min_magnitude_pct = -1;
+module_param(min_magnitude_pct, int, 0644);
+MODULE_PARM_DESC(min_magnitude_pct, "weakest non-zero magnitude, in % of full (-1: the device tree's)");
+static int min_on_ms = -1;
+module_param(min_on_ms, int, 0644);
+MODULE_PARM_DESC(min_on_ms, "shortest pulse in ms (-1: the device tree's)");
 
 static int max77693_haptic_set_duty_cycle(struct max77693_haptic *haptic)
 {
@@ -229,7 +248,7 @@ err_disable_lowsys:
 static void max77693_haptic_play_work(struct work_struct *work)
 {
 	struct max77693_haptic *haptic =
-			container_of(work, struct max77693_haptic, work);
+			container_of(to_delayed_work(work), struct max77693_haptic, work);
 
 	if (!haptic->magnitude)
 		max77693_haptic_disable(haptic);
@@ -245,10 +264,34 @@ static int max77693_haptic_play_effect(struct input_dev *dev, void *data,
 	struct max77693_haptic *haptic = input_get_drvdata(dev);
 	struct pwm_args pargs;
 	u64 period_mag_multi;
+	unsigned long delay = 0;
+	int pct = READ_ONCE(min_magnitude_pct), on_ms = READ_ONCE(min_on_ms);
+
+	if (pct < 0)
+		pct = haptic->min_magnitude_pct;
+	if (on_ms < 0)
+		on_ms = haptic->min_on_ms;
 
 	haptic->magnitude = effect->u.rumble.strong_magnitude;
 	if (!haptic->magnitude)
 		haptic->magnitude = effect->u.rumble.weak_magnitude;
+	if (haptic->magnitude && pct > 0) {
+		u32 floor = MAX_MAGNITUDE * min(pct, 100) / 100;
+
+		haptic->magnitude = floor + (u64)haptic->magnitude * (MAX_MAGNITUDE - floor) /
+					    MAX_MAGNITUDE;
+	}
+
+	/* a stop that comes before the shortest pulse is over waits for it */
+	if (haptic->magnitude && !haptic->playing) {
+		haptic->on_since = ktime_get();
+	} else if (!haptic->magnitude && haptic->playing && on_ms > 0) {
+		s64 left = on_ms - ktime_ms_delta(ktime_get(), haptic->on_since);
+
+		if (left > 0)
+			delay = msecs_to_jiffies(left);
+	}
+	haptic->playing = haptic->magnitude;
 
 	/*
 	 * The magnitude comes from force-feedback interface.
@@ -260,7 +303,7 @@ static int max77693_haptic_play_effect(struct input_dev *dev, void *data,
 	haptic->pwm_duty = (unsigned int)(period_mag_multi >>
 						MAX_MAGNITUDE_SHIFT);
 
-	schedule_work(&haptic->work);
+	mod_delayed_work(system_wq, &haptic->work, delay);
 
 	return 0;
 }
@@ -289,7 +332,7 @@ static void max77693_haptic_close(struct input_dev *dev)
 	struct max77693_haptic *haptic = input_get_drvdata(dev);
 	int error;
 
-	cancel_work_sync(&haptic->work);
+	cancel_delayed_work_sync(&haptic->work);
 	max77693_haptic_disable(haptic);
 
 	error = regulator_disable(haptic->motor_reg);
@@ -332,7 +375,10 @@ static int max77693_haptic_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	INIT_WORK(&haptic->work, max77693_haptic_play_work);
+	INIT_DELAYED_WORK(&haptic->work, max77693_haptic_play_work);
+	device_property_read_u32(&pdev->dev, "maxim,min-magnitude-percent",
+				 &haptic->min_magnitude_pct);
+	device_property_read_u32(&pdev->dev, "maxim,min-on-ms", &haptic->min_on_ms);
 
 	/* Get pwm and regulatot for haptic device */
 	haptic->pwm_dev = devm_pwm_get(&pdev->dev, NULL);
