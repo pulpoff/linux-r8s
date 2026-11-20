@@ -98,6 +98,7 @@ struct qca_fw_config {
 	enum qca_tlv_dnld_mode dnld_mode;
 	enum qca_tlv_dnld_mode dnld_type;
 	bdaddr_t bdaddr;
+	bool seg_acks;	/* acks every segment despite the download mode */
 };
 
 struct edl_event_hdr {

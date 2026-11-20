@@ -5,6 +5,7 @@
  *  Copyright (c) 2015 The Linux Foundation. All rights reserved.
  */
 #include <linux/module.h>
+#include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/vmalloc.h>
 
@@ -307,6 +308,21 @@ static bool qca_get_alt_nvm_file(char *filename, size_t max_size)
 	return false;
 }
 
+static bool nvm_ibs_off;
+module_param(nvm_ibs_off, bool, 0644);
+static int nvm_sleep;
+module_param(nvm_sleep, int, 0644);
+static unsigned int nvm_settle_ms;
+module_param(nvm_settle_ms, uint, 0644);
+static bool skip_soclog;
+module_param(skip_soclog, bool, 0644);
+static int nvm_baud = -1;
+module_param(nvm_baud, int, 0644);
+static unsigned int dbg_probe;
+module_param(dbg_probe, uint, 0644);
+static bool skip_patch;
+module_param(skip_patch, bool, 0644);
+
 static int qca_tlv_check_data(struct hci_dev *hdev,
 			       struct qca_fw_config *config,
 			       u8 *fw_data, size_t fw_size,
@@ -442,13 +458,19 @@ static int qca_tlv_check_data(struct hci_dev *hdev,
 				 * enabling software inband sleep
 				 * onto controller side.
 				 */
-				tlv_nvm->data[0] |= 0x80;
+				if (!(nvm_ibs_off && soc_type == QCA_QCA6390))	/* DEBUG */
+					tlv_nvm->data[0] |= 0x80;
 
 				/* UART Baud Rate */
 				if (soc_type >= QCA_WCN3991)
 					tlv_nvm->data[1] = nvm_baud_rate;
 				else
 					tlv_nvm->data[2] = nvm_baud_rate;
+				/* DEBUG (S20 FE) */
+				if (soc_type == QCA_QCA6390 && nvm_baud >= 0)
+					tlv_nvm->data[1] = nvm_baud;
+				bt_dev_info(hdev, "NVM HCI tag: %*ph", tag_len,
+					    tlv_nvm->data);
 
 				break;
 
@@ -460,6 +482,23 @@ static int qca_tlv_check_data(struct hci_dev *hdev,
 				 * enabling deep sleep feature on controller.
 				 */
 				tlv_nvm->data[0] |= 0x01;
+
+				/* DEBUG (S20 FE): 1 = no deep sleep,
+				 * 2 = stock userspace's out-of-band sleep
+				 * (BT_WAKE on chip GPIO 9, HOST_WAKE on 8)
+				 */
+				if (soc_type == QCA_QCA6390 && nvm_sleep == 1)
+					tlv_nvm->data[0] &= ~0x01;
+				if (soc_type == QCA_QCA6390 && nvm_sleep == 2 &&
+				    tag_len >= 9) {
+					tlv_nvm->data[1] = 3;
+					tlv_nvm->data[5] = 1;
+					tlv_nvm->data[6] = 1;
+					tlv_nvm->data[7] = 9;
+					tlv_nvm->data[8] = 8;
+				}
+				bt_dev_info(hdev, "NVM deep sleep tag: %*ph",
+					    tag_len, tlv_nvm->data);
 
 				break;
 			}
@@ -515,7 +554,11 @@ static int qca_tlv_send_segment(struct hci_dev *hdev, int seg_size,
 		return err;
 	}
 
-	if (skb->len != rlen) {
+	/*
+	 * QCA6390 ROM 0x200 (Samsung S20 FE) acks with {cresp, rtype} plus a
+	 * trailing status byte: only a short reply is malformed.
+	 */
+	if (skb->len < rlen || (soc_type < QCA_WCN3991 && skb->len != rlen)) {
 		bt_dev_err(hdev, "QCA TLV response size mismatch");
 		err = -EILSEQ;
 		goto out;
@@ -542,6 +585,79 @@ out:
 	kfree_skb(skb);
 
 	return err;
+}
+
+/*
+ * Send one segment and wait briefly for a Command Complete. Returns 1 if the
+ * controller acked it, 0 if it stayed silent (the skip-event download mode
+ * working as documented), or a negative error.
+ */
+static int qca_tlv_probe_segment_ack(struct hci_dev *hdev, int seg_size,
+				     const u8 *data)
+{
+	u8 cmd[MAX_SIZE_PER_TLV_SEGMENT + 2];
+	struct sk_buff *skb;
+
+	cmd[0] = EDL_PATCH_TLV_REQ_CMD;
+	cmd[1] = seg_size;
+	memcpy(cmd + 2, data, seg_size);
+
+	skb = __hci_cmd_sync_ev(hdev, EDL_PATCH_CMD_OPCODE, seg_size + 2, cmd,
+				0, msecs_to_jiffies(1000));
+	if (PTR_ERR(skb) == -ETIMEDOUT)
+		return 0;
+	if (IS_ERR(skb)) {
+		bt_dev_err(hdev, "QCA Failed to send TLV segment (%ld)",
+			   PTR_ERR(skb));
+		return PTR_ERR(skb);
+	}
+	if (skb->len < 2 || skb->data[0] != EDL_CMD_REQ_RES_EVT ||
+	    skb->data[1] != EDL_PATCH_TLV_REQ_CMD) {
+		bt_dev_err(hdev, "QCA TLV segment ack %*ph", skb->len, skb->data);
+		kfree_skb(skb);
+		return -EIO;
+	}
+	kfree_skb(skb);
+	return 1;
+}
+
+static int qca_inject_cmd_complete_event(struct hci_dev *hdev);
+
+/*
+ * The last segment on a controller that acks every segment: it answers with
+ * a vendor event {cresp 0x00, rtype, result 0x00, ...} instead of a Command
+ * Complete (QCA6390 ROM 0x200: 00 00 00 10 01).
+ */
+static int qca_tlv_send_last_segment_vse(struct hci_dev *hdev, int seg_size,
+					 const u8 *data)
+{
+	u8 cmd[MAX_SIZE_PER_TLV_SEGMENT + 2];
+	struct sk_buff *skb;
+	int err = 0;
+
+	cmd[0] = EDL_PATCH_TLV_REQ_CMD;
+	cmd[1] = seg_size;
+	memcpy(cmd + 2, data, seg_size);
+
+	skb = __hci_cmd_sync_ev(hdev, EDL_PATCH_CMD_OPCODE, seg_size + 2, cmd,
+				HCI_EV_VENDOR, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb)) {
+		bt_dev_err(hdev, "QCA Failed to send last TLV segment (%ld)",
+			   PTR_ERR(skb));
+		return PTR_ERR(skb);
+	}
+	if (skb->len < 3 || skb->data[0] != EDL_CMD_REQ_RES_EVT ||
+	    skb->data[2]) {
+		bt_dev_err(hdev, "QCA last TLV segment answered %*ph",
+			   skb->len, skb->data);
+		err = -EIO;
+	}
+	kfree_skb(skb);
+	if (err)
+		return err;
+
+	/* No Command Complete follows: give the command credit back */
+	return qca_inject_cmd_complete_event(hdev);
 }
 
 static int qca_inject_cmd_complete_event(struct hci_dev *hdev)
@@ -622,6 +738,7 @@ static int qca_download_firmware(struct hci_dev *hdev,
 	remain = size;
 	while (remain > 0) {
 		int segsize = min(MAX_SIZE_PER_TLV_SEGMENT, remain);
+		bool first = segment == data;
 
 		bt_dev_dbg(hdev, "Send segment %d, size %d", i++, segsize);
 
@@ -630,8 +747,41 @@ static int qca_download_firmware(struct hci_dev *hdev,
 		if (!remain || segsize < MAX_SIZE_PER_TLV_SEGMENT)
 			config->dnld_mode = QCA_SKIP_EVT_NONE;
 
-		ret = qca_tlv_send_segment(hdev, segsize, segment,
-					   config->dnld_mode, soc_type);
+		/*
+		 * Some QCA6390s (ROM 0x200 on the Samsung S20 FE) ack every
+		 * segment with a Command Complete even when the patch asks to
+		 * skip events, and those acks would answer the wait on the last
+		 * segment. Send the first one synchronously: if it is acked, wait
+		 * for every segment's ack. Such a controller acks the last
+		 * segment of each file with a vendor event instead.
+		 */
+		if (first && !config->seg_acks && soc_type == QCA_QCA6390 &&
+		    config->dnld_mode != QCA_SKIP_EVT_NONE) {
+			ret = qca_tlv_probe_segment_ack(hdev, segsize, segment);
+			if (ret < 0)
+				goto out;
+			if (ret) {
+				bt_dev_info(hdev, "QCA controller acks every segment");
+				config->seg_acks = true;
+			}
+			segment += segsize;
+			continue;
+		}
+
+		if (config->seg_acks) {
+			config->dnld_mode = QCA_SKIP_EVT_NONE;
+			config->dnld_type = QCA_SKIP_EVT_NONE;
+			if (!remain)
+				ret = qca_tlv_send_last_segment_vse(hdev, segsize,
+								    segment);
+			else
+				ret = qca_tlv_send_segment(hdev, segsize, segment,
+							   QCA_SKIP_EVT_NONE,
+							   soc_type);
+		} else {
+			ret = qca_tlv_send_segment(hdev, segsize, segment,
+						   config->dnld_mode, soc_type);
+		}
 		if (ret)
 			goto out;
 
@@ -765,6 +915,38 @@ static void qca_get_nvm_name_by_board(char *fwname, size_t max_size,
 	}
 }
 
+/* DEBUG (S20 FE): what does the controller answer at this point? */
+static void qca_dbg_probe(struct hci_dev *hdev, const char *when)
+{
+	static const struct { u16 op; u8 len; u8 p0; const char *what; } t[] = {
+		{ 0xfc00, 1, 0x19, "EDL version" },
+		{ 0xfc48, 1, 0x00, "set baud 115200" },
+		{ 0xfc00, 1, 0x20, "EDL build info" },
+		{ 0xfc00, 1, 0x23, "EDL board id" },
+		{ 0x1001, 0, 0, "read local version" },
+		{ 0x0c03, 0, 0, "reset" },
+	};
+	struct sk_buff *skb;
+	int k;
+
+	for (k = 0; k < ARRAY_SIZE(t); k++) {
+		u8 p0 = t[k].p0;
+
+		skb = __hci_cmd_sync(hdev, t[k].op, t[k].len, &p0,
+				     msecs_to_jiffies(1000));
+		if (!IS_ERR(skb)) {
+			bt_dev_info(hdev, "%s: %s answered: %*ph", when,
+				    t[k].what, skb->len, skb->data);
+			kfree_skb(skb);
+			continue;
+		}
+		bt_dev_info(hdev, "%s: %s silent (%ld)", when, t[k].what,
+			    PTR_ERR(skb));
+		/* the command timer gives the credit back after 2 s */
+		msleep(1500);
+	}
+}
+
 int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 		   enum qca_btsoc_type soc_type, struct qca_btsoc_version ver,
 		   const char *firmware_name, const char *rampatch_name)
@@ -798,6 +980,9 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 		qca_send_patch_config_cmd(hdev);
 
 	/* Download rampatch file */
+	if (soc_type == QCA_QCA6390 && dbg_probe & 4)
+		qca_dbg_probe(hdev, "ROM");
+
 	config.type = TLV_TYPE_PATCH;
 	if (rampatch_name) {
 		snprintf(config.fwname, sizeof(config.fwname), "qca/%s", rampatch_name);
@@ -851,7 +1036,10 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 		}
 	}
 
-	err = qca_download_firmware(hdev, &config, soc_type, rom_ver);
+	if (soc_type == QCA_QCA6390 && skip_patch)	/* DEBUG (S20 FE) */
+		err = 0;
+	else
+		err = qca_download_firmware(hdev, &config, soc_type, rom_ver);
 	/* For WCN6750, if mbn file is not present then check for
 	 * tlv file.
 	 */
@@ -877,6 +1065,9 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 
 	/* Give the controller some time to get ready to receive the NVM */
 	msleep(10);
+
+	if (soc_type == QCA_QCA6390 && dbg_probe & 1)
+		qca_dbg_probe(hdev, "after patch");
 
 	if (soc_type == QCA_QCA2066 || soc_type == QCA_WCN7850)
 		qca_read_fw_board_id(hdev, &boardid);
@@ -965,8 +1156,16 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 	case QCA_WCN6750:
 	case QCA_WCN6855:
 	case QCA_WCN7850:
+		if (soc_type == QCA_QCA6390 && dbg_probe & 2)
+			qca_dbg_probe(hdev, "after NVM");
+		/* DEBUG (S20 FE): settle time, and the soc logging command skipped */
+		if (soc_type == QCA_QCA6390 && nvm_settle_ms)
+			msleep(nvm_settle_ms);
+		if (soc_type == QCA_QCA6390 && skip_soclog)
+			break;
 		err = qca_disable_soc_logging(hdev);
-		if (err < 0)
+		/* DEBUG (S20 FE): carry on to the HCI reset to see if the chip answers */
+		if (err < 0 && soc_type != QCA_QCA6390)
 			return err;
 		break;
 	default:

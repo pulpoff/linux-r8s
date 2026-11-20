@@ -1705,6 +1705,15 @@ static const struct qmi_elem_info qmi_wlfw_fw_init_done_ind_msg_v01_ei[] = {
 	},
 };
 
+/*
+ * TEST (S20 FE, 2026-11-20): a board that feeds the QCA6390 an external 32 kHz sleep clock, like Samsung's,
+ * whose own driver never sends nm_modem. With the internal sleep clock selected the chip's Bluetooth ROM
+ * ignores the baud-rate change (fc48) and never starts its patch.
+ */
+static bool ath11k_external_sleep_clock;
+module_param_named(external_sleep_clock, ath11k_external_sleep_clock, bool, 0444);
+MODULE_PARM_DESC(external_sleep_clock, "do not select the internal sleep clock (nm_modem) in the host capabilities");
+
 /* clang stack usage explodes if this is inlined */
 static noinline_for_stack
 int ath11k_qmi_host_cap_send(struct ath11k_base *ab)
@@ -1739,7 +1748,7 @@ int ath11k_qmi_host_cap_send(struct ath11k_base *ab)
 	req.cal_done_valid = 1;
 	req.cal_done = ab->qmi.cal_done;
 
-	if (ab->hw_params.internal_sleep_clock) {
+	if (ab->hw_params.internal_sleep_clock && !ath11k_external_sleep_clock) {
 		req.nm_modem_valid = 1;
 
 		/* Notify firmware that this is non-qualcomm platform. */

@@ -63,6 +63,18 @@
 /* max retry count when init fails */
 #define MAX_INIT_RETRIES 3
 
+/* DEBUG (S20 FE): change the QCA6390 baudrate the way stock userspace does */
+static bool hal_baud;
+module_param(hal_baud, bool, 0644);
+static unsigned int dbg_oper_speed;
+module_param(dbg_oper_speed, uint, 0644);
+static bool ver_first = true;
+module_param(ver_first, bool, 0644);
+static unsigned int rts_boot;
+module_param(rts_boot, uint, 0644);
+static unsigned int pre_delay_ms;
+module_param(pre_delay_ms, uint, 0644);
+
 /* Controller dump header */
 #define QCA_SSR_DUMP_HANDLE		0x0108
 #define QCA_DUMP_PACKET_SIZE		255
@@ -1387,6 +1399,8 @@ static int qca_set_baudrate(struct hci_dev *hdev, uint8_t baudrate)
 		break;
 
 	default:
+		if (qca_soc_type(hu) == QCA_QCA6390 && hal_baud)
+			break;	/* the host follows right after the drain */
 		msleep(300);
 	}
 
@@ -1501,6 +1515,9 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
 		if (!speed)
 			return 0;
 
+		if (soc_type == QCA_QCA6390 && hal_baud)
+			hci_uart_set_flow_control(hu, true);
+
 		/* Disable flow control for wcn3990 to deassert RTS while
 		 * changing the baudrate of chip and host.
 		 */
@@ -1539,6 +1556,10 @@ static int qca_set_speed(struct hci_uart *hu, enum qca_speed_type speed_type)
 		host_set_baudrate(hu, speed);
 
 error:
+		if (soc_type == QCA_QCA6390 && hal_baud) {
+			msleep(20);
+			hci_uart_set_flow_control(hu, false);
+		}
 		switch (soc_type) {
 		case QCA_WCN3950:
 		case QCA_WCN3988:
@@ -1822,6 +1843,20 @@ static int qca_regulator_init(struct hci_uart *hu)
 
 	qca_set_speed(hu, QCA_INIT_SPEED);
 
+	/* DEBUG (S20 FE): boot the chip again with RTS in a known state */
+	if (soc_type == QCA_QCA6390 && rts_boot && qcadev->bt_power->pwrseq) {
+		hci_uart_set_flow_control(hu, rts_boot == 1);
+		pwrseq_power_off(qcadev->bt_power->pwrseq);
+		msleep(100);
+		ret = pwrseq_power_on(qcadev->bt_power->pwrseq);
+		msleep(150);
+		hci_uart_set_flow_control(hu, false);
+		bt_dev_info(hu->hdev, "rebooted with RTS %s (%d)",
+			    rts_boot == 1 ? "deasserted" : "asserted", ret);
+		if (ret)
+			return ret;
+	}
+
 	switch (soc_type) {
 	case QCA_WCN3950:
 	case QCA_WCN3988:
@@ -1907,6 +1942,11 @@ static int qca_configure_hfp_offload(struct hci_dev *hdev)
 	hdev->get_codec_config_data = NULL;
 	return 0;
 }
+
+static bool probe_speeds;
+module_param(probe_speeds, bool, 0644);
+static bool no_retry;
+module_param(no_retry, bool, 0644);
 
 static int qca_setup(struct hci_uart *hu)
 {
@@ -1998,7 +2038,18 @@ retry:
 
 	default:
 		qca_set_speed(hu, QCA_INIT_SPEED);
+		if (soc_type == QCA_QCA6390 && pre_delay_ms)
+			msleep(pre_delay_ms);
+		/* DEBUG (S20 FE): talk to the ROM before changing its speed */
+		if (soc_type == QCA_QCA6390 && hal_baud && ver_first) {
+			ret = qca_read_soc_version(hdev, &ver, soc_type);
+			if (ret)
+				goto out;
+		}
 	}
+
+	if (soc_type == QCA_QCA6390 && dbg_oper_speed)	/* DEBUG (S20 FE) */
+		hu->oper_speed = dbg_oper_speed;
 
 	/* Setup user speed if needed */
 	speed = qca_get_speed(hu, QCA_OPER_SPEED);
@@ -2022,6 +2073,8 @@ retry:
 		break;
 
 	default:
+		if (soc_type == QCA_QCA6390 && hal_baud && ver_first)
+			break;
 		/* Get QCA version information */
 		ret = qca_read_soc_version(hdev, &ver, soc_type);
 		if (ret)
@@ -2031,6 +2084,38 @@ retry:
 	/* Setup patch / NVM configurations */
 	ret = qca_uart_setup(hdev, qca_baudrate, soc_type, ver,
 			firmware_name, rampatch_name);
+	/* DEBUG (S20 FE): at which speed does the controller answer after the NVM? */
+	if (ret && soc_type == QCA_QCA6390 && probe_speeds) {
+		static const unsigned int sp[] = { 3000000, 3200000, 115200 };
+		static const struct { u16 op; u8 len; u8 p0; const char *what; } t[] = {
+			{ 0xfc00, 1, 0x19, "EDL version" },
+			{ 0x1001, 0, 0, "read local version" },
+		};
+		struct sk_buff *skb;
+		int j, k;
+
+		msleep(2100);
+		for (j = 0; j < ARRAY_SIZE(sp); j++) {
+			host_set_baudrate(hu, sp[j]);
+			msleep(50);
+			for (k = 0; k < ARRAY_SIZE(t); k++) {
+				u8 p0 = t[k].p0;
+
+				skb = __hci_cmd_sync(hdev, t[k].op, t[k].len, &p0,
+						     msecs_to_jiffies(600));
+				if (!IS_ERR(skb)) {
+					bt_dev_info(hdev, "probe %u: %s answered: %*ph",
+						    sp[j], t[k].what, skb->len, skb->data);
+					kfree_skb(skb);
+					continue;
+				}
+				bt_dev_info(hdev, "probe %u: %s silent (%ld)", sp[j],
+					    t[k].what, PTR_ERR(skb));
+				msleep(2100);
+			}
+		}
+		host_set_baudrate(hu, 115200);
+	}
 	if (!ret) {
 		clear_bit(QCA_IBS_DISABLED, &qca->flags);
 		qca_debugfs_init(hdev);
@@ -2057,7 +2142,7 @@ out:
 	if (ret) {
 		qca_power_off(hu);
 
-		if (retries < MAX_INIT_RETRIES) {
+		if (retries < MAX_INIT_RETRIES && !no_retry) {
 			bt_dev_warn(hdev, "Retry BT power ON:%d", retries);
 			if (hu->serdev) {
 				serdev_device_close(hu->serdev);
