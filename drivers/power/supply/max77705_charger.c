@@ -54,35 +54,128 @@ static enum power_supply_property max77705_charger_props[] = {
 	POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT,
 };
 
+static int max77705_chgin_lim_ma(unsigned int regval)
+{
+	return regval <= 3 ? MAX77705_CURRENT_CHGIN_MIN / 1000 :
+			     (regval + 1) * MAX77705_CURRENT_CHGIN_STEP / 1000;
+}
+
+static void max77705_aicl_irq_on(struct max77705_charger_data *chg)
+{
+	lockdep_assert_held(&chg->aicl_lock);
+	if (chg->aicl_irq_off) {
+		enable_irq(chg->aicl_irq);
+		chg->aicl_irq_off = false;
+	}
+}
+
+/*
+ * AICL. AICL_OK low means the charger draws less than its input limit to hold
+ * VBUS at VCHGIN_REG: the source sags at that current. As the stock kernel
+ * does, step the limit down until it fits, MAX77705_AICL_STEP every 100 ms
+ * and to no less than MAX77705_AICL_FLOOR. Stock then keeps it until the
+ * cable changes. Here, MAX77705_AICL_RERUN_MS after it fits, it goes back up
+ * a step every MAX77705_AICL_CLIMB_MS while AICL stays quiet, up to the limit
+ * asked for: a source that sagged for a while (a hub whose other ports were
+ * busy) is used in full again, and one that cannot do more costs a step up
+ * and back down every MAX77705_AICL_RERUN_MS.
+ *
+ * All of it runs in this one work item, not in the interrupt handler: that
+ * runs in the one thread all MAX77705 interrupts share.
+ */
+static void max77705_aicl_work(struct work_struct *work)
+{
+	struct max77705_charger_data *chg =
+		container_of(to_delayed_work(work), struct max77705_charger_data, aicl_work);
+	unsigned long now = jiffies, delay = 0;
+	unsigned int int_ok, lim;
+	bool changed = false;
+
+	mutex_lock(&chg->aicl_lock);
+	if (chg->aicl_stopped ||
+	    regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &int_ok) ||
+	    regmap_field_read(chg->rfield[MAX77705_CHG_CHGIN_LIM], &lim))
+		goto out;
+
+	/* no input to fit: look again when it is back (CHGIN_I), or in a while */
+	if (!(int_ok & MAX77705_CHGIN_OK)) {
+		if (lim < chg->ilim_req)
+			delay = msecs_to_jiffies(MAX77705_AICL_RERUN_MS);
+		goto out;
+	}
+
+	if (!(int_ok & MAX77705_AICL_OK)) {
+		chg->aicl_stepping = true;
+		if (lim > MAX77705_AICL_FLOOR) {
+			lim = max(lim - MAX77705_AICL_STEP, MAX77705_AICL_FLOOR);
+			regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], lim);
+			delay = msecs_to_jiffies(AICL_WORK_DELAY_MS);
+			goto out;
+		}
+		/* at the floor: no more AICL interrupts until the limit goes up */
+		if (!chg->aicl_irq_off) {
+			disable_irq_nosync(chg->aicl_irq);
+			chg->aicl_irq_off = true;
+		}
+	} else if (!chg->aicl_stepping && lim < chg->ilim_req &&
+		   time_after_eq(now, chg->rerun_at)) {
+		lim = min(lim + MAX77705_AICL_STEP, chg->ilim_req);
+		regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], lim);
+		max77705_aicl_irq_on(chg);
+		chg->aicl_climbing = true;
+		chg->rerun_at = now + msecs_to_jiffies(MAX77705_AICL_CLIMB_MS);
+		/* if the source sags at this one, step back down at once */
+		delay = msecs_to_jiffies(AICL_WORK_DELAY_MS);
+		goto out;
+	} else if (chg->aicl_climbing && time_after_eq(now, chg->rerun_at)) {
+		/* the last step up, to the limit asked for, held */
+		chg->aicl_climbing = false;
+	}
+
+	if (chg->aicl_stepping) {
+		/* it fits, or is as low as it goes: wait before going up again */
+		chg->aicl_stepping = false;
+		chg->aicl_climbing = false;
+		chg->rerun_at = now + msecs_to_jiffies(MAX77705_AICL_RERUN_MS);
+	}
+
+	/* tell where it settles, not each step on the way */
+	if (!chg->aicl_climbing && lim != chg->ilim_shown) {
+		dev_info(chg->dev, "AICL: input limit %d -> %d mA%s\n",
+			 max77705_chgin_lim_ma(chg->ilim_shown), max77705_chgin_lim_ma(lim),
+			 int_ok & MAX77705_AICL_OK ? "" : ", VBUS still low");
+		chg->ilim_shown = lim;
+		changed = true;
+	}
+
+	if (lim < chg->ilim_req || chg->aicl_climbing)
+		delay = time_after(chg->rerun_at, now) ? chg->rerun_at - now : 1;
+out:
+	if (delay)
+		mod_delayed_work(chg->wqueue, &chg->aicl_work, delay);
+	mutex_unlock(&chg->aicl_lock);
+	if (changed)
+		power_supply_changed(chg->psy_chg);
+}
+
+/* Before the AICL interrupt goes: the work must not touch it any more. */
+static void max77705_aicl_stop(void *data)
+{
+	struct max77705_charger_data *chg = data;
+
+	mutex_lock(&chg->aicl_lock);
+	chg->aicl_stopped = true;
+	mutex_unlock(&chg->aicl_lock);
+	cancel_delayed_work_sync(&chg->aicl_work);
+}
+
 static irqreturn_t max77705_aicl_irq(int irq, void *irq_drv_data)
 {
 	struct max77705_charger_data *chg = irq_drv_data;
-	unsigned int regval, irq_status;
-	int err;
 
-	err = regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &irq_status);
-	if (err < 0)
-		return IRQ_HANDLED;
-
-	// irq is fiered at the end of current decrease sequence too
-	// early check AICL_I bit to guard against that excess irq call
-	while (!(irq_status & BIT(MAX77705_AICL_I))) {
-		err = regmap_field_read(chg->rfield[MAX77705_CHG_CHGIN_LIM], &regval);
-		if (err < 0)
-			return IRQ_HANDLED;
-
-		regval--;
-
-		err = regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], regval);
-		if (err < 0)
-			return IRQ_HANDLED;
-
-		msleep(AICL_WORK_DELAY_MS);
-
-		err = regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &irq_status);
-		if (err < 0)
-			return IRQ_HANDLED;
-	}
+	/* it fires when AICL ends, too: the work reads which it is */
+	mod_delayed_work(chg->wqueue, &chg->aicl_work,
+			 msecs_to_jiffies(AICL_WORK_DELAY_MS));
 
 	return IRQ_HANDLED;
 }
@@ -469,6 +562,39 @@ static int max77705_chg_get_property(struct power_supply *psy,
 	return 0;
 }
 
+/*
+ * A new input limit: AICL starts over from it. The same one again (USB-C
+ * writes it along with each new charge current) leaves AICL where it is.
+ */
+static int max77705_set_input_current(struct max77705_charger_data *chg, int ua)
+{
+	unsigned int lim = clamp_val(ua, MAX77705_CURRENT_CHGIN_MIN,
+				     MAX77705_CURRENT_CHGIN_MAX) / MAX77705_CURRENT_CHGIN_STEP;
+	int err = 0;
+
+	mutex_lock(&chg->aicl_lock);
+	if (lim == chg->ilim_req)
+		goto out;
+	err = regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], lim);
+	if (err)
+		goto out;
+	chg->ilim_req = lim;
+	chg->ilim_shown = lim;
+	chg->aicl_stepping = false;
+	chg->aicl_climbing = false;
+	chg->rerun_at = jiffies + msecs_to_jiffies(MAX77705_AICL_RERUN_MS);
+	if (!chg->aicl_stopped) {
+		max77705_aicl_irq_on(chg);
+		/* AICL_OK may be low already, with no new edge to tell */
+		mod_delayed_work(chg->wqueue, &chg->aicl_work,
+				 msecs_to_jiffies(AICL_WORK_DELAY_MS));
+	}
+out:
+	mutex_unlock(&chg->aicl_lock);
+
+	return err;
+}
+
 static int max77705_set_property(struct power_supply *psy,
 				 enum power_supply_property psp,
 				 const union power_supply_propval *val)
@@ -485,11 +611,7 @@ static int max77705_set_property(struct power_supply *psy,
 					   val->intval);
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		err = max77705_set_integer(chg, MAX77705_CHG_CHGIN_LIM,
-					   MAX77705_CURRENT_CHGIN_MIN,
-					   MAX77705_CURRENT_CHGIN_MAX,
-					   MAX77705_CURRENT_CHGIN_STEP,
-					   val->intval);
+		err = max77705_set_input_current(chg, val->intval);
 		break;
 	default:
 		err = -EINVAL;
@@ -571,6 +693,8 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 		container_of(work, struct max77705_charger_data, chgin_work);
 
 	mod_delayed_work(chg->wqueue, &chg->temp_work, 0);
+	/* an input that comes back gets its limit fitted again */
+	mod_delayed_work(chg->wqueue, &chg->aicl_work, msecs_to_jiffies(AICL_WORK_DELAY_MS));
 	power_supply_changed(chg->psy_chg);
 }
 
@@ -906,6 +1030,29 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 					     "cannot allocate regmap field\n");
 	}
 
+	/*
+	 * The input limit can be set as soon as the power supply is there:
+	 * what AICL needs comes first, and goes last.
+	 */
+	chg->wqueue = devm_alloc_ordered_workqueue(dev, "%s", 0, dev_name(dev));
+	if (!chg->wqueue)
+		return -ENOMEM;
+
+	ret = devm_mutex_init(dev, &chg->aicl_lock);
+	if (ret)
+		return ret;
+
+	ret = devm_delayed_work_autocancel(dev, &chg->aicl_work, max77705_aicl_work);
+	if (ret)
+		return ret;
+
+	/* AICL fits what the boot loader left, until a limit is asked for */
+	ret = regmap_field_read(chg->rfield[MAX77705_CHG_CHGIN_LIM], &chg->ilim_req);
+	if (ret)
+		return ret;
+	chg->ilim_shown = chg->ilim_req;
+	chg->rerun_at = jiffies;
+
 	pscfg.fwnode = dev_fwnode(dev);
 	pscfg.drv_data = chg;
 
@@ -924,10 +1071,6 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 					chip_desc, &irq_data);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to add irq chip\n");
-
-	chg->wqueue = devm_alloc_ordered_workqueue(dev, "%s", 0, dev_name(dev));
-	if (!chg->wqueue)
-		return -ENOMEM;
 
 	ret = devm_work_autocancel(dev, &chg->chgin_work, max77705_chgin_isr_work);
 	if (ret)
@@ -966,12 +1109,20 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	/* a pad the phone was already lying on */
 	queue_delayed_work(chg->wqueue, &chg->wcin_work, 0);
 
-	ret = devm_request_threaded_irq(dev, regmap_irq_get_virq(irq_data, MAX77705_AICL_I),
+	chg->aicl_irq = regmap_irq_get_virq(irq_data, MAX77705_AICL_I);
+	ret = devm_request_threaded_irq(dev, chg->aicl_irq,
 					NULL, max77705_aicl_irq,
 					IRQF_TRIGGER_NONE,
 					"aicl-irq", chg);
 	if (ret)
 		return ret;
+
+	ret = devm_add_action_or_reset(dev, max77705_aicl_stop, chg);
+	if (ret)
+		return ret;
+
+	/* AICL may be on already, with no edge to tell */
+	mod_delayed_work(chg->wqueue, &chg->aicl_work, msecs_to_jiffies(AICL_WORK_DELAY_MS));
 
 	ret = max77705_charger_enable(chg);
 	if (ret)

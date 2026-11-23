@@ -151,6 +151,18 @@
 
 #define AICL_WORK_DELAY_MS		100
 
+/*
+ * AICL: the input limit comes down 100 mA per 100 ms while the charger has to
+ * hold VBUS up, to no less than 300 mA (the stock kernel's REDUCE_CURRENT_STEP
+ * and MINIMUM_INPUT_CURRENT). 30 s after that it tries going back up, a step
+ * every 5 s while each one holds, to the limit that was asked for. In
+ * CHGIN_LIM steps.
+ */
+#define MAX77705_AICL_STEP		4	/* 100 mA */
+#define MAX77705_AICL_FLOOR		11	/* (11 + 1) * 25 mA = 300 mA */
+#define MAX77705_AICL_RERUN_MS		30000
+#define MAX77705_AICL_CLIMB_MS		5000
+
 /* uA */
 #define MAX77705_CURRENT_CHGIN_STEP	25000
 #define MAX77705_CURRENT_CHG_STEP	50000
@@ -223,6 +235,18 @@ struct max77705_charger_data {
 	int			zone_misses;	/* looks without the battery zone */
 	bool			unbinding;	/* no more temperature checks */
 	struct power_supply	*psy_chg;
+
+	/* AICL; the lock covers CHGIN_LIM and this state */
+	struct mutex		aicl_lock;
+	struct delayed_work	aicl_work;
+	int			aicl_irq;
+	bool			aicl_irq_off;	/* masked at the floor */
+	bool			aicl_stepping;	/* stepping down now */
+	bool			aicl_climbing;	/* a step up, not known to hold yet */
+	bool			aicl_stopped;	/* unbinding */
+	unsigned int		ilim_req;	/* CHGIN_LIM asked for */
+	unsigned int		ilim_shown;	/* CHGIN_LIM last logged */
+	unsigned long		rerun_at;	/* jiffies: next step up, or end of the last */
 };
 
 #endif /* __MAX77705_CHARGER_H */
