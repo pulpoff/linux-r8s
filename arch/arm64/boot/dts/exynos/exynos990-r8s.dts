@@ -27,6 +27,14 @@
 		 */
 		spi0 = &spi_16;
 		spi1 = &spi_14;
+		/*
+		 * Fixed I2C bus numbers, as they came up in address order before
+		 * the NFC's bus: the charger stays on i2c-0 for userspace tools.
+		 */
+		i2c0 = &hsi2c_7;
+		i2c1 = &hsi2c_31;
+		i2c2 = &hsi2c_15;
+		i2c3 = &hsi2c_25;
 	};
 
 	chosen {
@@ -419,6 +427,19 @@
 		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
+
+	/* the NFC chip's interrupt and its request for the reference clock */
+	nfc_irq: nfc-irq-pins {
+		samsung,pins = "gpa1-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
+
+	nfc_clk_req: nfc-clk-req-pins {
+		samsung,pins = "gpa2-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_DOWN>;
+	};
 };
 
 /* MAX77705: PMIC top, charger and fuel gauge (vendor hsi2c7) */
@@ -491,6 +512,8 @@
 		compatible = "maxim,max77705-charger";
 		reg = <0x69>;
 		monitored-battery = <&battery>;
+		/* Qi at 5 V, 5 W: the owner's choice (stock's BPP limit is 1.1 A) */
+		maxim,wcin-current-limit-microamp = <1000000>;
 		interrupt-parent = <&max77705>;
 		interrupts = <0>;
 	};
@@ -738,6 +761,35 @@
 	};
 };
 
+/*
+ * NFC (vendor hsi2c25, USI12's I2C channel): Samsung S3NRN4V. Its 1.8 V
+ * PVDD is the S2MPS19's LDO22M, left on by the boot chain and shared with
+ * the rear light sensor; the driver does not switch it, so it is not named
+ * here (naming it would let the regulator core turn it off as unused). The
+ * reference clock is the PMU's CLKOUT1 (26 MHz TCXO), gated on CLK_REQ.
+ */
+&usi_i2c_peric1_12 {
+	status = "okay";
+};
+
+&hsi2c_25 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	nfc@27 {
+		compatible = "samsung,s3nrn4v";
+		reg = <0x27>;
+		interrupt-parent = <&gpa1>;
+		interrupts = <2 IRQ_TYPE_EDGE_RISING>;
+		en-gpios = <&gpp6 0 GPIO_ACTIVE_HIGH>;
+		wake-gpios = <&gpp3 0 GPIO_ACTIVE_HIGH>;
+		clk-req-gpios = <&gpa2 6 GPIO_ACTIVE_HIGH>;
+		clocks = <&pmu_system_controller 0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&nfc_irq &nfc_clk_req &nfc_pd &nfc_firm>;
+	};
+};
+
 /* S-Boot's running pipeline: page flips, and the EA8079 it lit as a DSI device */
 &decon0 {
 	status = "okay";
@@ -852,6 +904,16 @@
 };
 
 &pinctrl_peric0 {
+	/*
+	 * The NFC chip's FIRM (download mode / wake). The driver makes it an
+	 * output (low); only pull and drive here, as for the power-down below.
+	 */
+	nfc_firm: nfc-firm-pins {
+		samsung,pins = "gpp3-0";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV3>;
+	};
+
 	/* TOUT1, the vibrator's PWM */
 	vib_pwm: vib-pwm-pins {
 		samsung,pins = "gpp4-5";
@@ -862,6 +924,17 @@
 };
 
 &pinctrl_peric1 {
+	/*
+	 * The NFC chip's power-down (stock nfc_pd, "VEN"): high is off. The
+	 * driver drives it high at once; a function here would drive it low
+	 * (the chip on) first.
+	 */
+	nfc_pd: nfc-pd-pins {
+		samsung,pins = "gpp6-0";
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV3>;
+	};
+
 	/* the sensor hub + GNSS chip's power (stock "ssp-gps-pwr-en") */
 	shub_pwr_en: shub-pwr-en-pins {
 		samsung,pins = "gpp6-3";

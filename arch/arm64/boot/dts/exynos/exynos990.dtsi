@@ -870,6 +870,37 @@
 			};
 		};
 
+		/*
+		 * USI12's dedicated I2C channel (vendor hsi2c25, the NFC): ports
+		 * TOP1 13, the I2C half next to USI12's own 12.
+		 */
+		usi_i2c_peric1_12: usi@109d00c0 {
+			compatible = "samsung,exynos850-usi";
+			reg = <0x109d00c0 0x20>;
+			ranges;
+			#address-cells = <1>;
+			#size-cells = <1>;
+			clocks = <&cmu_peric1 CLK_GOUT_PERIC1_TOP1_PCLK_13>,
+				 <&cmu_peric1 CLK_GOUT_PERIC1_TOP1_IPCLK_13>;
+			clock-names = "pclk", "ipclk";
+			samsung,mode = <USI_MODE_I2C>;
+			status = "disabled";
+
+			hsi2c_25: i2c@109d0000 {
+				compatible = "samsung,exynosautov9-hsi2c";
+				reg = <0x109d0000 0xc0>;
+				interrupts = <GIC_SPI 430 IRQ_TYPE_LEVEL_HIGH>;
+				clocks = <&cmu_peric1 CLK_GOUT_PERIC1_TOP1_IPCLK_13>,
+					 <&cmu_peric1 CLK_GOUT_PERIC1_TOP1_PCLK_13>;
+				clock-names = "hsi2c", "hsi2c_pclk";
+				pinctrl-names = "default";
+				pinctrl-0 = <&hsi2c25_bus>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "disabled";
+			};
+		};
+
 		cmu_hsi0: clock-controller@10a00000 {
 			compatible = "samsung,exynos990-cmu-hsi0";
 			reg = <0x10a00000 0x8000>;
@@ -1050,6 +1081,12 @@
 				     "samsung,exynos7-pmu", "syscon";
 			reg = <0x15860000 0x10000>;
 			google,pmu-intr-gen-syscon = <&pmu_intr_gen>;
+			/* CLKOUT1 (exynos-clkout): select 0 is the TCXO */
+			#clock-cells = <1>;
+			clocks = <&oscclk>;
+			clock-names = "clkout0";
+			assigned-clocks = <&pmu_system_controller 0>;
+			assigned-clock-parents = <&oscclk>;
 
 			reboot: syscon-reboot {
 				compatible = "syscon-reboot";
