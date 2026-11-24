@@ -6,6 +6,7 @@
  * Robert Baldyga <r.baldyga@samsung.com>
  */
 
+#include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/firmware.h>
 #include <linux/minmax.h>
@@ -135,6 +136,15 @@ out:
 int s3fwrn5_nci_clk_cfg(struct s3fwrn5_info *info)
 {
 	u8 clk_speed = NCI_PROP_FW_CFG_CLK_SPEED;
+	struct clk *clk;
+
+	/* a 26 MHz reference (the Exynos boards' TCXO) has its own selector */
+	clk = clk_get_optional(info->pdev, NULL);
+	if (!IS_ERR_OR_NULL(clk)) {
+		if (clk_get_rate(clk) == 26000000)
+			clk_speed = NCI_PROP_FW_CFG_CLK_SPEED_26MHZ;
+		clk_put(clk);
+	}
 
 	return nci_prop_cmd(info->ndev, NCI_PROP_FW_CFG, 1, &clk_speed);
 }

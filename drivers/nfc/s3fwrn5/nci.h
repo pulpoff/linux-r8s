@@ -43,9 +43,11 @@ struct nci_prop_stop_rfreg_rsp {
 /*
  * Single-byte FW_CFG payload (clock-speed selector) for the S3NRN4V reference
  * clock. Taken from the vendor configuration for this part (the encoding is
- * not documented).
+ * not documented beyond its comments there: 0x11 for a 19.2 MHz reference,
+ * 0x12 for 26 MHz).
  */
 #define NCI_PROP_FW_CFG_CLK_SPEED	0x11
+#define NCI_PROP_FW_CFG_CLK_SPEED_26MHZ	0x12
 
 struct nci_prop_fw_cfg_cmd {
 	__u8 clk_type;
