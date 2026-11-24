@@ -84,6 +84,20 @@ static void s3fwrn5_i2c_clk_disable_action(void *data)
 	mutex_unlock(&phy->clk_lock);
 }
 
+/* unbind with the chip still powered: power-down first, then its supply */
+static void s3fwrn5_i2c_pvdd_off_action(void *data)
+{
+	struct s3fwrn5_i2c_phy *phy = data;
+
+	mutex_lock(&phy->common.mutex);
+	if (phy->common.pvdd_on) {
+		gpiod_set_value(phy->common.gpio_en, 1);
+		regulator_disable(phy->common.pvdd);
+		phy->common.pvdd_on = false;
+	}
+	mutex_unlock(&phy->common.mutex);
+}
+
 static irqreturn_t s3fwrn5_i2c_clk_req_thread(int irq, void *phy_id)
 {
 	s3fwrn5_i2c_clk_sync(phy_id);
@@ -233,6 +247,23 @@ static int s3fwrn5_i2c_probe(struct i2c_client *client)
 	phy->common.gpio_fw_wake = devm_gpiod_get(&client->dev, "wake", GPIOD_OUT_LOW);
 	if (IS_ERR(phy->common.gpio_fw_wake))
 		return PTR_ERR(phy->common.gpio_fw_wake);
+
+	/*
+	 * PVDD, where the board switches it: on while the chip is out of
+	 * power-down (s3fwrn5_phy_power_ctrl), as stock's ldo_control does.
+	 */
+	phy->common.pvdd = devm_regulator_get_optional(&client->dev, "pvdd");
+	if (IS_ERR(phy->common.pvdd)) {
+		ret = PTR_ERR(phy->common.pvdd);
+		if (ret != -ENODEV)
+			return dev_err_probe(&client->dev, ret, "failed to get PVDD\n");
+		phy->common.pvdd = NULL;
+	} else {
+		ret = devm_add_action_or_reset(&client->dev,
+					       s3fwrn5_i2c_pvdd_off_action, phy);
+		if (ret)
+			return ret;
+	}
 
 	/*
 	 * S3FWRN5 depends on a clock input ("XI" pin) to function properly.

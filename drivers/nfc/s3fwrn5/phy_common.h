@@ -13,17 +13,24 @@
 
 #include <linux/mutex.h>
 #include <linux/gpio/consumer.h>
+#include <linux/regulator/consumer.h>
 #include <net/nfc/nci_core.h>
 
 #include "s3fwrn5.h"
 
 #define S3FWRN5_EN_WAIT_TIME 20
+/* PVDD up before the chip leaves power-down (the stock NFC driver: 25 ms) */
+#define S3FWRN5_PVDD_WAIT_TIME 25
 
 struct phy_common {
 	struct nci_dev *ndev;
 
 	struct gpio_desc *gpio_en;
 	struct gpio_desc *gpio_fw_wake;
+
+	/* optional: switched with the chip, under mutex */
+	struct regulator *pvdd;
+	bool pvdd_on;
 
 	struct mutex mutex;
 

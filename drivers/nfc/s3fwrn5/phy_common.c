@@ -25,6 +25,23 @@ void s3fwrn5_phy_set_wake(void *phy_id, bool wake)
 }
 EXPORT_SYMBOL(s3fwrn5_phy_set_wake);
 
+static void s3fwrn5_phy_pvdd(struct phy_common *phy, bool on)
+{
+	int ret;
+
+	if (!phy->pvdd || phy->pvdd_on == on)
+		return;
+
+	ret = on ? regulator_enable(phy->pvdd) : regulator_disable(phy->pvdd);
+	if (ret) {
+		pr_err("s3fwrn5: PVDD %s failed: %d\n", on ? "on" : "off", ret);
+		return;
+	}
+	phy->pvdd_on = on;
+	if (on)
+		msleep(S3FWRN5_PVDD_WAIT_TIME);
+}
+
 bool s3fwrn5_phy_power_ctrl(struct phy_common *phy, enum s3fwrn5_mode mode)
 {
 	if (phy->mode == mode)
@@ -34,14 +51,22 @@ bool s3fwrn5_phy_power_ctrl(struct phy_common *phy, enum s3fwrn5_mode mode)
 
 	gpiod_set_value(phy->gpio_en, 1);
 	gpiod_set_value(phy->gpio_fw_wake, 0);
+
+	if (mode == S3FWRN5_MODE_COLD) {
+		/* held in power-down: the supply can go */
+		s3fwrn5_phy_pvdd(phy, false);
+		return true;
+	}
+
+	/* the supply first, the chip still held in power-down */
+	s3fwrn5_phy_pvdd(phy, true);
+
 	if (mode == S3FWRN5_MODE_FW)
 		gpiod_set_value(phy->gpio_fw_wake, 1);
 
-	if (mode != S3FWRN5_MODE_COLD) {
-		msleep(S3FWRN5_EN_WAIT_TIME);
-		gpiod_set_value(phy->gpio_en, 0);
-		msleep(S3FWRN5_EN_WAIT_TIME);
-	}
+	msleep(S3FWRN5_EN_WAIT_TIME);
+	gpiod_set_value(phy->gpio_en, 0);
+	msleep(S3FWRN5_EN_WAIT_TIME);
 
 	return true;
 }
