@@ -82,6 +82,15 @@ static irqreturn_t max77705_chgin_irq(int irq, void *irq_drv_data)
 	return IRQ_HANDLED;
 }
 
+static irqreturn_t max77705_wcin_irq(int irq, void *irq_drv_data)
+{
+	struct max77705_charger_data *chg = irq_drv_data;
+
+	mod_delayed_work(chg->wqueue, &chg->wcin_work, 0);
+
+	return IRQ_HANDLED;
+}
+
 static const struct regmap_irq max77705_charger_irqs[] = {
 	REGMAP_IRQ_REG_LINE(MAX77705_BYP_I, BITS_PER_BYTE),
 	REGMAP_IRQ_REG_LINE(MAX77705_INP_LIMIT_I, BITS_PER_BYTE),
@@ -486,6 +495,49 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 	power_supply_changed(chg->psy_chg);
 }
 
+/*
+ * Wireless (WCIN, fed by the IDT receiver): the receiver's own firmware runs
+ * the Qi link at 5 V, the charger only limits what it takes. Stock starts at
+ * 480 mA and steps up, so a weak pad is not overloaded the moment it starts;
+ * the ceiling is the board's (maxim,wcin-current-limit-microamp), else 820 mA.
+ */
+static void max77705_wcin_work(struct work_struct *work)
+{
+	struct max77705_charger_data *chg =
+		container_of(to_delayed_work(work), struct max77705_charger_data, wcin_work);
+	unsigned int ok;
+	int ma;
+
+	if (regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &ok))
+		return;
+
+	if (!(ok & MAX77705_WCIN_OK))
+		ma = MAX77705_WCIN_START_MA;
+	else if (!chg->wcin_ma)
+		ma = MAX77705_WCIN_START_MA;
+	else
+		ma = min(chg->wcin_ma + MAX77705_WCIN_STEP_MA, chg->wcin_max_ma);
+
+	if (ma != chg->wcin_ma || !(ok & MAX77705_WCIN_OK))
+		regmap_update_bits(chg->regmap, MAX77705_CHG_REG_CNFG_10,
+				   MAX77705_WCIN_LIM_MASK, MAX77705_WCIN_LIM(ma));
+
+	if (!(ok & MAX77705_WCIN_OK)) {
+		if (chg->wcin_ma)
+			dev_info(chg->dev, "wireless input gone\n");
+		chg->wcin_ma = 0;
+	} else {
+		if (!chg->wcin_ma)
+			dev_info(chg->dev, "wireless input present\n");
+		chg->wcin_ma = ma;
+		if (ma < chg->wcin_max_ma)
+			queue_delayed_work(chg->wqueue, &chg->wcin_work,
+					   msecs_to_jiffies(MAX77705_WCIN_STEP_MS));
+	}
+
+	power_supply_changed(chg->psy_chg);
+}
+
 static int max77705_charger_initialize(struct max77705_charger_data *chg)
 {
 	struct power_supply_battery_info *info;
@@ -570,6 +622,18 @@ static int max77705_charger_initialize(struct max77705_charger_data *chg)
 	if (err)
 		goto err;
 
+	/* take both inputs (stock keeps WCINSEL and CHGINSEL set) */
+	err = regmap_update_bits(regmap, MAX77705_CHG_REG_CNFG_12,
+				 MAX77705_WCINSEL | MAX77705_CHGINSEL,
+				 MAX77705_WCINSEL | MAX77705_CHGINSEL);
+	if (err)
+		goto err;
+
+	err = regmap_update_bits(regmap, MAX77705_CHG_REG_CNFG_10, MAX77705_WCIN_LIM_MASK,
+				 MAX77705_WCIN_LIM(MAX77705_WCIN_START_MA));
+	if (err)
+		goto err;
+
 	/* Watchdog timer */
 	regmap_update_bits(regmap, MAX77705_CHG_REG_CNFG_00,
 				MAX77705_WDTEN_MASK, 0);
@@ -603,6 +667,7 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	struct regmap_irq_chip *chip_desc;
 	struct device *dev;
 	struct regmap_irq_chip_data *irq_data;
+	u32 wcin_ua;
 	int ret;
 
 	dev = &i2c->dev;
@@ -664,6 +729,24 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 					"chgin-irq", chg);
 	if (ret)
 		return ret;
+
+	chg->wcin_max_ma = MAX77705_WCIN_MAX_MA;
+	if (!device_property_read_u32(dev, "maxim,wcin-current-limit-microamp", &wcin_ua))
+		chg->wcin_max_ma = clamp_val(wcin_ua / 1000, MAX77705_WCIN_START_MA,
+					     MAX77705_WCIN_LIM_MAX_MA);
+
+	ret = devm_delayed_work_autocancel(dev, &chg->wcin_work, max77705_wcin_work);
+	if (ret)
+		return ret;
+
+	ret = devm_request_threaded_irq(dev, regmap_irq_get_virq(irq_data, MAX77705_WCIN_I),
+					NULL, max77705_wcin_irq,
+					IRQF_TRIGGER_NONE,
+					"wcin-irq", chg);
+	if (ret)
+		return ret;
+	/* a pad the phone was already lying on */
+	queue_delayed_work(chg->wqueue, &chg->wcin_work, 0);
 
 	ret = devm_request_threaded_irq(dev, regmap_irq_get_virq(irq_data, MAX77705_AICL_I),
 					NULL, max77705_aicl_irq,

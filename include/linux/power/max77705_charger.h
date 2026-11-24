@@ -121,6 +121,18 @@
 /* REG=4.5V, UVLO=4.7V */
 #define MAX77705_WCIN_4_5		0
 #define MAX77705_DISABLE_SKIP		1
+#define MAX77705_WCINSEL		BIT(6)
+#define MAX77705_CHGINSEL		BIT(5)
+
+/* MAX77705_CHG_REG_CNFG_10: WCIN input current, 25 mA steps from 100 mA */
+#define MAX77705_WCIN_LIM_MASK		GENMASK(5, 0)
+#define MAX77705_WCIN_LIM(ma)		((ma) / 25 - 1)
+#define MAX77705_WCIN_LIM_MAX_MA	1600
+/* stock: Qi (5 V) is ramped from 480 mA to 820 mA in 100 mA steps */
+#define MAX77705_WCIN_START_MA		480
+#define MAX77705_WCIN_MAX_MA		820
+#define MAX77705_WCIN_STEP_MA		100
+#define MAX77705_WCIN_STEP_MS		500
 #define MAX77705_AUTO_SKIP		0
 
 #define AICL_WORK_DELAY_MS		100
@@ -187,6 +199,9 @@ struct max77705_charger_data {
 	struct power_supply_battery_info *bat_info;
 	struct workqueue_struct *wqueue;
 	struct work_struct	chgin_work;
+	struct delayed_work	wcin_work;
+	int			wcin_ma;	/* WCIN limit the ramp is at */
+	int			wcin_max_ma;	/* and where it stops */
 	struct power_supply	*psy_chg;
 };
 
