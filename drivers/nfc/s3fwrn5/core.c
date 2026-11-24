@@ -13,6 +13,16 @@
 #include "firmware.h"
 #include "nci.h"
 
+/*
+ * The S3NRN4V keeps its RF calibration between power-ups; stock rewrites it
+ * only when the files' version differs from the chip's. Leave it alone
+ * unless asked.
+ */
+static unsigned int rf_calib;
+module_param(rf_calib, uint, 0644);
+MODULE_PARM_DESC(rf_calib,
+		 "S3NRN4V RF calibration: 0 = leave the chip's alone (default), 1 = log the chip's versions, 2 = upload hwreg/swreg");
+
 #define S3FWRN5_NFC_PROTOCOLS  (NFC_PROTO_JEWEL_MASK | \
 				NFC_PROTO_MIFARE_MASK | \
 				NFC_PROTO_FELICA_MASK | \
@@ -148,8 +158,14 @@ static int s3fwrn5_nci_post_setup(struct nci_dev *ndev)
 		 * The S3NRN4V ships with working firmware behind a bootloader
 		 * protocol this driver does not implement, so there is no
 		 * download step; the NCI core has already done CORE_RESET +
-		 * CORE_INIT. Just load the RF calibration data via DUAL_OPTION.
+		 * CORE_INIT. The RF calibration data goes in via DUAL_OPTION,
+		 * only when rf_calib asks for it.
 		 */
+		if (rf_calib >= 1)
+			s3fwrn5_nci_dual_get_ver(info);
+		if (rf_calib < 2)
+			return 0;
+
 		ret = s3fwrn5_nci_rf_configure_dual(info,
 						    "samsung/s3nrn4v/hwreg.bin",
 						    "samsung/s3nrn4v/swreg.bin");

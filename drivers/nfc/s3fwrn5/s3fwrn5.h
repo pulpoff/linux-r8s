@@ -50,6 +50,10 @@ struct s3fwrn5_info {
 	struct s3fwrn5_fw_info fw_info;
 	enum s3fwrn5_variant variant;
 
+	/* the last DUAL_OPTION response, as the chip sent it */
+	u8 dual_rsp[32];
+	unsigned int dual_rsp_len;
+
 	struct mutex mutex;
 };
 

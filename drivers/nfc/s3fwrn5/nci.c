@@ -24,6 +24,19 @@ static int s3fwrn5_nci_prop_rsp(struct nci_dev *ndev, struct sk_buff *skb)
 	return 0;
 }
 
+/* Keeps the payload: a GET_VER answer carries the versions, not a status. */
+static int s3fwrn5_nci_dual_rsp(struct nci_dev *ndev, struct sk_buff *skb)
+{
+	struct s3fwrn5_info *info = nci_get_drvdata(ndev);
+
+	info->dual_rsp_len = min_t(unsigned int, skb->len,
+				   sizeof(info->dual_rsp));
+	memcpy(info->dual_rsp, skb->data, info->dual_rsp_len);
+
+	nci_req_complete(ndev, skb->len ? skb->data[0] : NCI_STATUS_SYNTAX_ERROR);
+	return 0;
+}
+
 const struct nci_driver_ops s3fwrn5_nci_prop_ops[5] = {
 	{
 		.opcode = nci_opcode_pack(NCI_GID_PROPRIETARY,
@@ -48,7 +61,7 @@ const struct nci_driver_ops s3fwrn5_nci_prop_ops[5] = {
 	{
 		.opcode = nci_opcode_pack(NCI_GID_PROPRIETARY,
 				NCI_PROP_DUAL_OPTION),
-		.rsp = s3fwrn5_nci_prop_rsp,
+		.rsp = s3fwrn5_nci_dual_rsp,
 	},
 };
 
@@ -245,4 +258,27 @@ out:
 out_hw:
 	release_firmware(hw_fw);
 	return ret;
+}
+
+/*
+ * Ask the S3NRN4V which RF (hwreg) and SW (swreg) calibration versions it
+ * holds. Stock's userspace sends this after CORE_INIT and uploads the files only
+ * when their trailing version differs, so the chip keeps them between
+ * power-ups. Read-only; the answer is logged raw for comparison with the
+ * last 16 bytes of each file.
+ */
+void s3fwrn5_nci_dual_get_ver(struct s3fwrn5_info *info)
+{
+	struct device *dev = &info->ndev->nfc_dev->dev;
+	u8 sub_oid = NCI_PROP_DUAL_SUB_GET_VER;
+	int ret;
+
+	info->dual_rsp_len = 0;
+	ret = nci_prop_cmd(info->ndev, NCI_PROP_DUAL_OPTION, 1, &sub_oid);
+	if (!info->dual_rsp_len) {
+		dev_warn(dev, "calibration versions: no answer (%d)\n", ret);
+		return;
+	}
+	dev_info(dev, "calibration versions in the chip (%u bytes): %*ph\n",
+		 info->dual_rsp_len, info->dual_rsp_len, info->dual_rsp);
 }
