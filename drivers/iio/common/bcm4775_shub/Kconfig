@@ -10,7 +10,8 @@ config IIO_BCM4775_SHUB
 	  It needs a RAM patch on every power-up (brcm/bcm4775-shub.patch, or
 	  the device tree's firmware-name). The
 	  accelerometer, light, proximity and compass it runs are exposed
-	  as IIO devices.
+	  as IIO devices, and its GNSS engine as /dev/bcm4775-gnss for a
+	  GNSS host engine in userspace.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called bcm4775-shub.
