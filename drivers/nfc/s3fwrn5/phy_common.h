@@ -21,6 +21,13 @@
 #define S3FWRN5_EN_WAIT_TIME 20
 /* PVDD up before the chip leaves power-down (the stock NFC driver: 25 ms) */
 #define S3FWRN5_PVDD_WAIT_TIME 25
+/*
+ * The S3NRN4V's hold in power-down and its settle time after leaving it.
+ * The stock NFC driver holds VEN off for 20 ms (150 ms
+ * in its margin build) and waits half that after releasing
+ * it, its userspace another 10 ms. Take the margin build's figure, both sides.
+ */
+#define S3NRN4V_EN_WAIT_TIME 150
 
 struct phy_common {
 	struct nci_dev *ndev;
@@ -35,6 +42,9 @@ struct phy_common {
 	struct mutex mutex;
 
 	enum s3fwrn5_mode mode;
+
+	/* power-down hold and settle time, ms; 0 = S3FWRN5_EN_WAIT_TIME */
+	unsigned int en_wait_ms;
 };
 
 void s3fwrn5_phy_set_wake(void *phy_id, bool wake);

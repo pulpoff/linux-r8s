@@ -44,6 +44,8 @@ static void s3fwrn5_phy_pvdd(struct phy_common *phy, bool on)
 
 bool s3fwrn5_phy_power_ctrl(struct phy_common *phy, enum s3fwrn5_mode mode)
 {
+	unsigned int wait = phy->en_wait_ms ?: S3FWRN5_EN_WAIT_TIME;
+
 	if (phy->mode == mode)
 		return false;
 
@@ -64,9 +66,9 @@ bool s3fwrn5_phy_power_ctrl(struct phy_common *phy, enum s3fwrn5_mode mode)
 	if (mode == S3FWRN5_MODE_FW)
 		gpiod_set_value(phy->gpio_fw_wake, 1);
 
-	msleep(S3FWRN5_EN_WAIT_TIME);
+	msleep(wait);
 	gpiod_set_value(phy->gpio_en, 0);
-	msleep(S3FWRN5_EN_WAIT_TIME);
+	msleep(wait);
 
 	return true;
 }

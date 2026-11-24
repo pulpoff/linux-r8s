@@ -322,6 +322,9 @@ static int s3fwrn5_i2c_probe(struct i2c_client *client)
 	}
 
 	variant = (uintptr_t)i2c_get_match_data(client);
+	if (variant == S3FWRN5_VARIANT_S3NRN4V)
+		phy->common.en_wait_ms = S3NRN4V_EN_WAIT_TIME;
+
 	ret = s3fwrn5_probe(&phy->common.ndev, phy, &phy->i2c_dev->dev,
 			    &i2c_phy_ops, variant);
 	if (ret < 0)
