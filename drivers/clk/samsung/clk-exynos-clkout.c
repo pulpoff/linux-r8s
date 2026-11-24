@@ -27,6 +27,13 @@
 #define EXYNOS_CLKOUT_MUX_SHIFT		8
 #define EXYNOS4_CLKOUT_MUX_MASK		0xf
 #define EXYNOS5_CLKOUT_MUX_MASK		0x1f
+/*
+ * The Exynos 990 has two outputs: CLKOUT0 in PMU_DEBUG and CLKOUT1 in its own
+ * register after it, each with a 6-bit select at bit 8 and the disable bit at
+ * bit 0. CLKOUT1 is the one boards use (the S20 FE's NFC reference clock).
+ */
+#define EXYNOS990_CLKOUT1_REG		0xa0c
+#define EXYNOS990_CLKOUT_MUX_MASK	0x3f
 
 struct exynos_clkout {
 	struct clk_gate gate;
@@ -34,20 +41,29 @@ struct exynos_clkout {
 	spinlock_t slock;
 	void __iomem *reg;
 	struct device_node *np;
+	u32 reg_offset;
 	u32 pmu_debug_save;
 	struct clk_hw_onecell_data data;
 };
 
 struct exynos_clkout_variant {
 	u32 mux_mask;
+	u32 reg_offset;
 };
 
 static const struct exynos_clkout_variant exynos_clkout_exynos4 = {
 	.mux_mask	= EXYNOS4_CLKOUT_MUX_MASK,
+	.reg_offset	= EXYNOS_PMU_DEBUG_REG,
 };
 
 static const struct exynos_clkout_variant exynos_clkout_exynos5 = {
 	.mux_mask	= EXYNOS5_CLKOUT_MUX_MASK,
+	.reg_offset	= EXYNOS_PMU_DEBUG_REG,
+};
+
+static const struct exynos_clkout_variant exynos_clkout_exynos990 = {
+	.mux_mask	= EXYNOS990_CLKOUT_MUX_MASK,
+	.reg_offset	= EXYNOS990_CLKOUT1_REG,
 };
 
 static const struct of_device_id exynos_clkout_ids[] = {
@@ -75,6 +91,9 @@ static const struct of_device_id exynos_clkout_ids[] = {
 	}, {
 		.compatible = "samsung,exynos5433-pmu",
 		.data = &exynos_clkout_exynos5,
+	}, {
+		.compatible = "samsung,exynos990-pmu",
+		.data = &exynos_clkout_exynos990,
 	}, { }
 };
 
@@ -82,7 +101,8 @@ static const struct of_device_id exynos_clkout_ids[] = {
  * Device will be instantiated as child of PMU device without its own
  * device node.  Therefore match compatibles against parent.
  */
-static int exynos_clkout_match_parent_dev(struct device *dev, u32 *mux_mask)
+static int exynos_clkout_match_parent_dev(struct device *dev, u32 *mux_mask,
+					  u32 *reg_offset)
 {
 	const struct exynos_clkout_variant *variant;
 	const struct of_device_id *match;
@@ -105,6 +125,7 @@ static int exynos_clkout_match_parent_dev(struct device *dev, u32 *mux_mask)
 	variant = match->data;
 
 	*mux_mask = variant->mux_mask;
+	*reg_offset = variant->reg_offset;
 
 	return 0;
 }
@@ -123,7 +144,8 @@ static int exynos_clkout_probe(struct platform_device *pdev)
 	if (!clkout)
 		return -ENOMEM;
 
-	ret = exynos_clkout_match_parent_dev(&pdev->dev, &mux_mask);
+	ret = exynos_clkout_match_parent_dev(&pdev->dev, &mux_mask,
+					     &clkout->reg_offset);
 	if (ret)
 		return ret;
 
@@ -164,12 +186,12 @@ static int exynos_clkout_probe(struct platform_device *pdev)
 		goto clks_put;
 	}
 
-	clkout->gate.reg = clkout->reg + EXYNOS_PMU_DEBUG_REG;
+	clkout->gate.reg = clkout->reg + clkout->reg_offset;
 	clkout->gate.bit_idx = EXYNOS_CLKOUT_DISABLE_SHIFT;
 	clkout->gate.flags = CLK_GATE_SET_TO_DISABLE;
 	clkout->gate.lock = &clkout->slock;
 
-	clkout->mux.reg = clkout->reg + EXYNOS_PMU_DEBUG_REG;
+	clkout->mux.reg = clkout->reg + clkout->reg_offset;
 	clkout->mux.mask = mux_mask;
 	clkout->mux.shift = EXYNOS_CLKOUT_MUX_SHIFT;
 	clkout->mux.lock = &clkout->slock;
@@ -218,7 +240,7 @@ static int __maybe_unused exynos_clkout_suspend(struct device *dev)
 {
 	struct exynos_clkout *clkout = dev_get_drvdata(dev);
 
-	clkout->pmu_debug_save = readl(clkout->reg + EXYNOS_PMU_DEBUG_REG);
+	clkout->pmu_debug_save = readl(clkout->reg + clkout->reg_offset);
 
 	return 0;
 }
@@ -227,7 +249,7 @@ static int __maybe_unused exynos_clkout_resume(struct device *dev)
 {
 	struct exynos_clkout *clkout = dev_get_drvdata(dev);
 
-	writel(clkout->pmu_debug_save, clkout->reg + EXYNOS_PMU_DEBUG_REG);
+	writel(clkout->pmu_debug_save, clkout->reg + clkout->reg_offset);
 
 	return 0;
 }
