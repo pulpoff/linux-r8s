@@ -100,6 +100,16 @@
 		 * kernel (/sys/firmware/fdt of a stock-bootloader boot, G780FXXUAEVK3).
 		 */
 
+		/*
+		 * IOVA only, no memory: the MFC's DMA window is stock's
+		 * [0x10000000, 0xd0000000) (s5p-mfc puts its firmware at the
+		 * start of it).
+		 */
+		mfc_iova: mfc-iova-reserved {
+			iommu-addresses = <&mfc 0x0 0x0 0x0 0x10000000>,
+					  <&mfc 0x0 0xd0000000 0x0 0x30000000>;
+		};
+
 		/* sec_debug_magic page + the KASLR page S-Boot fills */
 		sec_debug_magic: debug-magic@80000000 {
 			reg = <0 0x80000000 0 0x2000>;
@@ -809,6 +819,11 @@
 		compatible = "samsung,ea8079-r8s";
 		reg = <0>;
 	};
+};
+
+&mfc {
+	memory-region = <&mfc_iova>;
+	status = "okay";
 };
 
 &gpu {
