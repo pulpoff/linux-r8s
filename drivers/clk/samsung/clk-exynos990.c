@@ -2794,12 +2794,6 @@ static int __init exynos990_cmu_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 
 	info = of_device_get_match_data(dev);
-	if (info == &mfc0_cmu_info) {
-		/* in a power domain: runtime PM, no gate set to MANUAL */
-		exynos990_cmu_mfc0_fixup(pdev);
-		return exynos_arm64_register_cmu_pm(pdev, false);
-	}
-
 	exynos_arm64_register_cmu(dev, dev->of_node, info);
 
 	return 0;
@@ -2815,19 +2809,8 @@ static const struct of_device_id exynos990_cmu_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos990-cmu-peric1",
 		.data = &peric1_cmu_info,
-	}, {
-		.compatible = "samsung,exynos990-cmu-mfc0",
-		.data = &mfc0_cmu_info,
 	},
 	{ },
-};
-
-/* runtime PM: only CMU_MFC0 enables it, the other CMUs never get the calls */
-static const struct dev_pm_ops exynos990_cmu_pm_ops = {
-	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend, exynos_arm64_cmu_resume,
-			   NULL)
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				      pm_runtime_force_resume)
 };
 
 static struct platform_driver exynos990_cmu_driver __refdata = {
@@ -2835,7 +2818,6 @@ static struct platform_driver exynos990_cmu_driver __refdata = {
 		.name = "exynos990-cmu",
 		.of_match_table = exynos990_cmu_of_match,
 		.suppress_bind_attrs = true,
-		.pm = &exynos990_cmu_pm_ops,
 	},
 	.probe = exynos990_cmu_probe,
 };
@@ -2846,3 +2828,49 @@ static int __init exynos990_cmu_init(void)
 }
 
 core_initcall(exynos990_cmu_init);
+
+/*
+ * CMU_MFC0 is in pd_mfc0, so unlike the CMUs above its probe can be deferred,
+ * and everything it runs (the Samsung clock registration, its tables) is
+ * __init: a deferred retry after the kernel's init memory is freed would run
+ * freed code. Bind it once with platform_driver_probe(), after the devices
+ * and their power domains are populated (arch_initcall_sync): no deferred
+ * probe, and any later bind attempt fails instead of calling the probe.
+ */
+static int __init exynos990_cmu_mfc0_probe(struct platform_device *pdev)
+{
+	/* in a power domain: runtime PM, no gate set to MANUAL */
+	exynos990_cmu_mfc0_fixup(pdev);
+	return exynos_arm64_register_cmu_pm(pdev, false);
+}
+
+static const struct of_device_id exynos990_cmu_mfc0_of_match[] = {
+	{
+		.compatible = "samsung,exynos990-cmu-mfc0",
+		.data = &mfc0_cmu_info,
+	},
+	{ },
+};
+
+static const struct dev_pm_ops exynos990_cmu_mfc0_pm_ops = {
+	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend, exynos_arm64_cmu_resume,
+			   NULL)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				      pm_runtime_force_resume)
+};
+
+static struct platform_driver exynos990_cmu_mfc0_driver = {
+	.driver	= {
+		.name = "exynos990-cmu-mfc0",
+		.of_match_table = exynos990_cmu_mfc0_of_match,
+		.pm = &exynos990_cmu_mfc0_pm_ops,
+	},
+};
+
+static int __init exynos990_cmu_mfc0_init(void)
+{
+	return platform_driver_probe(&exynos990_cmu_mfc0_driver,
+				     exynos990_cmu_mfc0_probe);
+}
+
+subsys_initcall(exynos990_cmu_mfc0_init);
