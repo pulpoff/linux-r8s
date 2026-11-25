@@ -7,7 +7,10 @@
 
 #include <linux/clk-provider.h>
 #include <linux/of.h>
+#include <linux/io.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 
 #include <dt-bindings/clock/samsung,exynos990.h>
 
@@ -21,6 +24,7 @@
 #define CLKS_NR_PERIC0 (CLK_GOUT_PERIC0_SYSREG_PCLK + 1)
 #define CLKS_NR_PERIC1 (CLK_GOUT_PERIC1_XIU_P_ACLK + 1)
 #define CLKS_NR_PERIS (CLK_GOUT_PERIS_OTP_CON_TOP_OSCCLK + 1)
+#define CLKS_NR_MFC0 (CLK_GOUT_MFC0_SYSREG_MFC0_PCLK + 1)
 
 /* ---- CMU_TOP ------------------------------------------------------------- */
 
@@ -1129,11 +1133,16 @@ static const struct samsung_gate_clock top_gate_clks[] __initconst = {
 	     CLK_CON_GAT_GATE_CLKCMU_MCSC_BUS, 21, 0, 0),
 	GATE(CLK_GOUT_CMU_MCSC_GDC, "gout_cmu_mcsc_gdc", "mout_cmu_mcsc_gdc",
 	     CLK_CON_GAT_GATE_CLKCMU_MCSC_GDC, 21, 0, 0),
+	/*
+	 * CMU_TOP's gates are MANUAL here, unlike the stock automatic gating.
+	 * pd_mfc0's power-off asks EL3 to save MFC0's TZPC, which reads that
+	 * block: its clock must not be gated then, so these stay on.
+	 */
 	GATE(CLK_GOUT_CMU_MFC0_MFC0, "gout_cmu_mfc0_mfc0",
 	     "mout_cmu_mfc0_mfc0", CLK_CON_GAT_GATE_CLKCMU_MFC0_MFC0,
-	     21, 0, 0),
+	     21, CLK_IS_CRITICAL, 0),
 	GATE(CLK_GOUT_CMU_MFC0_WFD, "gout_cmu_mfc0_wfd", "mout_cmu_mfc0_wfd",
-	     CLK_CON_GAT_GATE_CLKCMU_MFC0_WFD, 21, 0, 0),
+	     CLK_CON_GAT_GATE_CLKCMU_MFC0_WFD, 21, CLK_IS_CRITICAL, 0),
 	GATE(CLK_GOUT_CMU_MIF_BUSP, "gout_cmu_mif_busp", "mout_cmu_mif_busp",
 	     CLK_CON_GAT_GATE_CLKCMU_MIF_BUSP, 21, 0, 0),
 	GATE(CLK_GOUT_CMU_NPU_BUS, "gout_cmu_npu_bus", "mout_cmu_npu_bus",
@@ -2658,6 +2667,125 @@ static void __init exynos990_cmu_peris_init(struct device_node *np)
 CLK_OF_DECLARE(exynos990_cmu_peris, "samsung,exynos990-cmu-peris",
 	       exynos990_cmu_peris_init);
 
+/* ---- CMU_MFC0 ------------------------------------------------------------ */
+
+/*
+ * Register offsets for CMU_MFC0 (0x18600000), in pd_mfc0.
+ *
+ * Only registers the stock CAL defines are touched; the rest of the block is
+ * left alone (unknown offsets may be holes). The gates are left in whatever
+ * mode S-Boot set (the CMU's automatic gating, CONTROLLER_OPTION bits 28/29):
+ * nothing here sets their MANUAL bit, so a gate's CG_VAL is only a request.
+ *
+ * pd_mfc0 power-cycles; a cold CMU comes back with reset values, so runtime
+ * PM saves and restores exactly the stock PMU-CAL "mfc0_save" list: the two
+ * USER muxes, BUSP, the 6 MEMPG_CONs, the 22 QCH_CONs and the option
+ * register. (Stock also restores SYSREG_MFC0 DRCG_EN/MEMCLK, which only
+ * save power; they are not touched here.)
+ */
+#define PLL_CON0_MUX_CLKCMU_MFC0_MFC0_USER				0x0600
+#define PLL_CON0_MUX_CLKCMU_MFC0_WFD_USER				0x0610
+#define MFC0_CMU_MFC0_CONTROLLER_OPTION					0x0800
+#define CLK_CON_DIV_DIV_CLK_MFC0_BUSP					0x1800
+#define CLK_CON_GAT_GOUT_BLK_MFC0_UID_MFC0_IPCLKPORT_ACLK		0x2024
+#define CLK_CON_GAT_GOUT_BLK_MFC0_UID_SYSMMU_MFC0D0_IPCLKPORT_CLK_S1	0x205c
+#define CLK_CON_GAT_GOUT_BLK_MFC0_UID_SYSMMU_MFC0D1_IPCLKPORT_CLK_S1	0x2064
+#define CLK_CON_GAT_GOUT_BLK_MFC0_UID_SYSREG_MFC0_IPCLKPORT_PCLK	0x206c
+
+/* stock S-Boot/CAL values, for a CMU found cold (see exynos990_cmu_mfc0_fixup) */
+#define MFC0_BUSP_DIV_STOCK		3	/* BUSP = MFC0 / 4 */
+#define MFC0_OPTION_STOCK		(BIT(29) | BIT(28))
+
+static const unsigned long mfc0_clk_regs[] __initconst = {
+	CLK_CON_DIV_DIV_CLK_MFC0_BUSP,
+	PLL_CON0_MUX_CLKCMU_MFC0_WFD_USER,
+	PLL_CON0_MUX_CLKCMU_MFC0_MFC0_USER,
+	/* QCH_CON: D_TZPC ... WFD */
+	0x3024, 0x3028, 0x302c, 0x3030, 0x3034, 0x3038,
+	0x303c, 0x3040, 0x3044, 0x3048, 0x304c, 0x3050,
+	0x3054, 0x3058, 0x305c, 0x3060, 0x3064, 0x3068,
+	0x306c, 0x3070, 0x3074, 0x3078,
+	/* MEMPG_CON: MFC0_0 ... WFD_3 */
+	0x3000, 0x3004, 0x3008, 0x300c, 0x3010, 0x3014,
+	MFC0_CMU_MFC0_CONTROLLER_OPTION,
+};
+
+PNAME(mout_mfc0_mfc0_user_p)	= { "oscclk", "dout_cmu_mfc0_mfc0" };
+PNAME(mout_mfc0_wfd_user_p)	= { "oscclk", "dout_cmu_mfc0_wfd" };
+
+static const struct samsung_mux_clock mfc0_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_MFC0_MFC0_USER, "mout_mfc0_mfc0_user",
+	    mout_mfc0_mfc0_user_p, PLL_CON0_MUX_CLKCMU_MFC0_MFC0_USER, 4, 1),
+	MUX(CLK_MOUT_MFC0_WFD_USER, "mout_mfc0_wfd_user",
+	    mout_mfc0_wfd_user_p, PLL_CON0_MUX_CLKCMU_MFC0_WFD_USER, 4, 1),
+};
+
+static const struct samsung_div_clock mfc0_div_clks[] __initconst = {
+	DIV(CLK_DOUT_MFC0_BUSP, "dout_mfc0_busp", "mout_mfc0_mfc0_user",
+	    CLK_CON_DIV_DIV_CLK_MFC0_BUSP, 0, 3),
+};
+
+static const struct samsung_gate_clock mfc0_gate_clks[] __initconst = {
+	GATE(CLK_GOUT_MFC0_MFC0_ACLK, "gout_mfc0_mfc0_aclk",
+	     "mout_mfc0_mfc0_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC0_UID_MFC0_IPCLKPORT_ACLK, 21, 0, 0),
+	GATE(CLK_GOUT_MFC0_SYSMMU_MFC0D0_CLK_S1, "gout_mfc0_sysmmu_mfc0d0_clk_s1",
+	     "mout_mfc0_mfc0_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC0_UID_SYSMMU_MFC0D0_IPCLKPORT_CLK_S1, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC0_SYSMMU_MFC0D1_CLK_S1, "gout_mfc0_sysmmu_mfc0d1_clk_s1",
+	     "mout_mfc0_mfc0_user",
+	     CLK_CON_GAT_GOUT_BLK_MFC0_UID_SYSMMU_MFC0D1_IPCLKPORT_CLK_S1, 21,
+	     CLK_IGNORE_UNUSED, 0),
+	GATE(CLK_GOUT_MFC0_SYSREG_MFC0_PCLK, "gout_mfc0_sysreg_mfc0_pclk",
+	     "dout_mfc0_busp",
+	     CLK_CON_GAT_GOUT_BLK_MFC0_UID_SYSREG_MFC0_IPCLKPORT_PCLK, 21,
+	     CLK_IGNORE_UNUSED, 0),
+};
+
+static const struct samsung_cmu_info mfc0_cmu_info __initconst = {
+	.mux_clks		= mfc0_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(mfc0_mux_clks),
+	.div_clks		= mfc0_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(mfc0_div_clks),
+	.gate_clks		= mfc0_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(mfc0_gate_clks),
+	.nr_clk_ids		= CLKS_NR_MFC0,
+	.clk_regs		= mfc0_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(mfc0_clk_regs),
+	.clk_name		= "bus",
+};
+
+/*
+ * A CMU_MFC0 that S-Boot did not set up (BUSP or the option register at
+ * their reset value 0) gets the stock values before its clocks are
+ * registered, so the save list never captures a cold state. Reads and
+ * writes only the two registers concerned, and logs what it found.
+ */
+static void __init exynos990_cmu_mfc0_fixup(struct platform_device *pdev)
+{
+	void __iomem *base;
+	u32 busp, opt;
+
+	base = of_iomap(pdev->dev.of_node, 0);
+	if (!base)
+		return;
+
+	busp = readl(base + CLK_CON_DIV_DIV_CLK_MFC0_BUSP);
+	opt = readl(base + MFC0_CMU_MFC0_CONTROLLER_OPTION);
+	dev_info(&pdev->dev, "S-Boot left BUSP %#x, option %#x, USER muxes %#x %#x\n",
+		 busp, opt, readl(base + PLL_CON0_MUX_CLKCMU_MFC0_MFC0_USER),
+		 readl(base + PLL_CON0_MUX_CLKCMU_MFC0_WFD_USER));
+
+	if (!(busp & 0x7))
+		writel((busp & ~0x7) | MFC0_BUSP_DIV_STOCK,
+		       base + CLK_CON_DIV_DIV_CLK_MFC0_BUSP);
+	if (!opt)
+		writel(MFC0_OPTION_STOCK, base + MFC0_CMU_MFC0_CONTROLLER_OPTION);
+
+	iounmap(base);
+}
+
 /* ----- platform_driver ----- */
 
 static int __init exynos990_cmu_probe(struct platform_device *pdev)
@@ -2666,6 +2794,12 @@ static int __init exynos990_cmu_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 
 	info = of_device_get_match_data(dev);
+	if (info == &mfc0_cmu_info) {
+		/* in a power domain: runtime PM, no gate set to MANUAL */
+		exynos990_cmu_mfc0_fixup(pdev);
+		return exynos_arm64_register_cmu_pm(pdev, false);
+	}
+
 	exynos_arm64_register_cmu(dev, dev->of_node, info);
 
 	return 0;
@@ -2681,8 +2815,19 @@ static const struct of_device_id exynos990_cmu_of_match[] = {
 	}, {
 		.compatible = "samsung,exynos990-cmu-peric1",
 		.data = &peric1_cmu_info,
+	}, {
+		.compatible = "samsung,exynos990-cmu-mfc0",
+		.data = &mfc0_cmu_info,
 	},
 	{ },
+};
+
+/* runtime PM: only CMU_MFC0 enables it, the other CMUs never get the calls */
+static const struct dev_pm_ops exynos990_cmu_pm_ops = {
+	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend, exynos_arm64_cmu_resume,
+			   NULL)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				      pm_runtime_force_resume)
 };
 
 static struct platform_driver exynos990_cmu_driver __refdata = {
@@ -2690,6 +2835,7 @@ static struct platform_driver exynos990_cmu_driver __refdata = {
 		.name = "exynos990-cmu",
 		.of_match_table = exynos990_cmu_of_match,
 		.suppress_bind_attrs = true,
+		.pm = &exynos990_cmu_pm_ops,
 	},
 	.probe = exynos990_cmu_probe,
 };
