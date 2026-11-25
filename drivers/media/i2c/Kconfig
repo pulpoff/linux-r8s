@@ -771,6 +771,13 @@ config VIDEO_S5C73M3
 	  This is a V4L2 sensor driver for Samsung S5C73M3
 	  8 Mpixel camera.
 
+config VIDEO_S5K3L6
+	tristate "Samsung S5K3L6 sensor support"
+	depends on I2C
+	help
+	  The 12 MP Samsung S5K3L6 camera sensor (rear ultrawide of the
+	  Galaxy S20 FE).
+
 config VIDEO_S5K3M5
 	tristate "Samsung S5K3M5 sensor support"
 	select V4L2_CCI_I2C
