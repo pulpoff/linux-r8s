@@ -52,6 +52,7 @@
 
 /* CSIS v5.3 link */
 #define CSIS_VERSION		0x000
+#define CSIS_VERSION_MAJ_MIN	0x0503		/* bits 31:16: v5.3 */
 #define CSIS_CMN_CTRL		0x004
 #define  CMN_CTRL_CSI_EN		BIT(0)
 #define  CMN_CTRL_SW_RESET		BIT(1)
@@ -966,6 +967,30 @@ static int csis_memory_region(struct csis *c)
 	return 0;
 }
 
+/*
+ * The first read of the receiver: its version, with its clocks on through
+ * runtime PM (and its power domain with them), before anything is written.
+ * A block that does not identify as the version this driver was written
+ * for is refused.
+ */
+static int csis_check_version(struct csis *c)
+{
+	u32 version;
+	int ret;
+
+	ret = pm_runtime_resume_and_get(c->dev);
+	if (ret)
+		return dev_err_probe(c->dev, ret, "power on\n");
+	version = readl(c->csis + CSIS_VERSION);
+	pm_runtime_put_sync(c->dev);	/* clocks off again before going on */
+
+	dev_info(c->dev, "CSIS%u version %#010x\n", c->id, version);
+	if ((version >> 16) != CSIS_VERSION_MAJ_MIN)
+		return dev_err_probe(c->dev, -ENODEV, "not a v%u.%u receiver\n",
+				     CSIS_VERSION_MAJ_MIN >> 8, CSIS_VERSION_MAJ_MIN & 0xff);
+	return 0;
+}
+
 static int csis_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -1040,6 +1065,9 @@ static int csis_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, c);
 	pm_runtime_enable(dev);
 
+	ret = csis_check_version(c);
+	if (ret)
+		goto err_v4l2;
 	ret = csis_parse_endpoint(c);
 	if (ret)
 		goto err_v4l2;
