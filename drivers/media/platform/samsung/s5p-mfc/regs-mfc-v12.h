@@ -49,4 +49,31 @@
 	ALIGN(((((x) + 3) * ((y) + 3) * 32)       \
 	+ ((((y) * 128) + 2304) * ((x) + 3) / 4)), 256)
 
+/*
+ * MFCv13 (Exynos 9820): the v12 host interface, with the context buffer
+ * sizes of the stock driver and a hardware version register the firmware
+ * fills in at SYS_INIT.
+ */
+#define MFC_CTX_BUF_SIZE_V13		(30 * SZ_1K)
+#define MFC_H264_DEC_CTX_BUF_SIZE_V13	(2 * SZ_1M)
+#define MFC_OTHER_DEC_CTX_BUF_SIZE_V13	(50 * SZ_1K)
+#define MFC_H264_ENC_CTX_BUF_SIZE_V13	(100 * SZ_1K)
+#define MFC_HEVC_ENC_CTX_BUF_SIZE_V13	(50 * SZ_1K)
+#define MFC_OTHER_ENC_CTX_BUF_SIZE_V13	(50 * SZ_1K)
+#define MAX_FW_SIZE_V13			(SZ_1M)
+#define MAX_CPB_SIZE_V13		(3 * SZ_1M)
+#define MFC_VERSION_V13			0xD0
+#define MFC_NUM_PORTS_V13		1
+#define S5P_FIMV_MFC_VERSION_V13	0xf028
+#define MFC_HW_VERSION_V13		0x1300
+#define MFC_IOVA_START_V13		0x10000000
+/* what the stock v13 driver sets on top of the v6 bits */
+#define S5P_FIMV_CLEAR_CTX_MEM_SHIFT_V13	16
+#define S5P_FIMV_D_OPT_CONCEAL_SHIFT_V13	8
+#define S5P_FIMV_D_OPT_REALLOC_SHIFT_V13	13
+#define S5P_FIMV_D_OPT_SPECIAL_PARSING_SHIFT_V13 15
+#define S5P_FIMV_D_FORCE_PIXEL_VAL_V13		0xf0c8
+#define S5P_FIMV_D_SEI_RECOVERY_SHIFT_V13	2
+#define MFC_CONCEAL_COLOR_V13			0x8020000
+
 #endif /*_REGS_MFC_V12_H*/

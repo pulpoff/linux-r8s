@@ -545,8 +545,14 @@ static void s5p_mfc_handle_seq_done(struct s5p_mfc_ctx *ctx,
 		else
 			ctx->state = MFCINST_HEAD_PARSED;
 
+		/*
+		 * A header buffer the firmware did not consume whole still
+		 * holds the first frame. v13 firmware stops at the end of the
+		 * headers for every codec (HEVC/VP9 too, not just H.264).
+		 */
 		if ((ctx->codec_mode == S5P_MFC_CODEC_H264_DEC ||
-			ctx->codec_mode == S5P_MFC_CODEC_H264_MVC_DEC) &&
+			ctx->codec_mode == S5P_MFC_CODEC_H264_MVC_DEC ||
+			IS_MFCV13(dev)) &&
 				!list_empty(&ctx->src_queue)) {
 			struct s5p_mfc_buf *src_buf;
 
@@ -662,8 +668,13 @@ static irqreturn_t s5p_mfc_irq(int irq, void *priv)
 	mfc_debug(1, "Int reason: %d (err: %08x)\n", reason, err);
 	switch (reason) {
 	case S5P_MFC_R2H_CMD_ERR_RET:
-		/* An error has occurred */
-		if (ctx->state == MFCINST_RUNNING &&
+		/*
+		 * An error has occurred. A warning on the frame a STREAMOFF is
+		 * waiting for (ABORT) is still just a decoded frame.
+		 */
+		if ((ctx->state == MFCINST_RUNNING ||
+		     (ctx->state == MFCINST_ABORT &&
+		      ctx->type == MFCINST_DECODER)) &&
 			(s5p_mfc_hw_call(dev->mfc_ops, err_dec, err) >=
 				dev->warn_start ||
 				err == S5P_FIMV_ERR_NO_VALID_SEQ_HDR ||
@@ -1230,8 +1241,24 @@ static int s5p_mfc_configure_common_memory(struct s5p_mfc_dev *mfc_dev)
 	if (!mfc_dev->mem_bitmap)
 		return -ENOMEM;
 
+	/*
+	 * v13 firmware takes buffer addresses as offsets from its base, so the
+	 * base must be the lowest IOVA, and stock gives the MFC the window
+	 * [0x10000000, 0xd0000000) only. The DT reserves the IOVA outside it
+	 * (memory-region with iommu-addresses); iommu-dma allocates top-down,
+	 * so a mask that ends at 0x10000000 + mem_size pins the firmware to
+	 * the bottom of the window and every later buffer lands above it.
+	 */
+	if (IS_MFCV13(mfc_dev) && exynos_is_iommu_available(dev))
+		dma_set_mask_and_coherent(dev, MFC_IOVA_START_V13 + mem_size - 1);
 	mfc_dev->mem_virt = dma_alloc_coherent(dev, mem_size,
 					       &mfc_dev->mem_base, GFP_KERNEL);
+	if (IS_MFCV13(mfc_dev) && exynos_is_iommu_available(dev)) {
+		dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+		if (mfc_dev->mem_virt && mfc_dev->mem_base != MFC_IOVA_START_V13)
+			dev_warn(dev, "firmware at IOVA %pad, not at the window start\n",
+				 &mfc_dev->mem_base);
+	}
 	if (!mfc_dev->mem_virt) {
 		bitmap_free(mfc_dev->mem_bitmap);
 		dev_err(dev, "failed to preallocate %ld MiB for the firmware and context buffers\n",
@@ -1705,6 +1732,31 @@ static struct s5p_mfc_variant mfc_drvdata_v12 = {
 	.num_clocks	= 1,
 };
 
+static struct s5p_mfc_buf_size_v6 mfc_buf_size_v13 = {
+	.dev_ctx        = MFC_CTX_BUF_SIZE_V13,
+	.h264_dec_ctx   = MFC_H264_DEC_CTX_BUF_SIZE_V13,
+	.other_dec_ctx  = MFC_OTHER_DEC_CTX_BUF_SIZE_V13,
+	.h264_enc_ctx   = MFC_H264_ENC_CTX_BUF_SIZE_V13,
+	.hevc_enc_ctx   = MFC_HEVC_ENC_CTX_BUF_SIZE_V13,
+	.other_enc_ctx  = MFC_OTHER_ENC_CTX_BUF_SIZE_V13,
+};
+
+static struct s5p_mfc_buf_size buf_size_v13 = {
+	.fw     = MAX_FW_SIZE_V13,
+	.cpb    = MAX_CPB_SIZE_V13,
+	.priv   = &mfc_buf_size_v13,
+};
+
+static struct s5p_mfc_variant mfc_drvdata_v13 = {
+	.version        = MFC_VERSION_V13,
+	.version_bit    = MFC_V13_BIT,
+	.port_num       = MFC_NUM_PORTS_V13,
+	.buf_size       = &buf_size_v13,
+	.fw_name[0]     = "s5p-mfc-v13.fw",
+	.clk_names	= {"mfc"},
+	.num_clocks	= 1,
+};
+
 static const struct of_device_id exynos_mfc_match[] = {
 	{
 		.compatible = "samsung,mfc-v5",
@@ -1730,6 +1782,9 @@ static const struct of_device_id exynos_mfc_match[] = {
 	}, {
 		.compatible = "tesla,fsd-mfc",
 		.data = &mfc_drvdata_v12,
+	}, {
+		.compatible = "samsung,exynos9820-mfc",
+		.data = &mfc_drvdata_v13,
 	},
 	{},
 };

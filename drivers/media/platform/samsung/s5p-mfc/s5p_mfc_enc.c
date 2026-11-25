@@ -64,14 +64,14 @@ static const struct s5p_mfc_fmt formats[] = {
 		.codec_mode     = S5P_MFC_CODEC_NONE,
 		.type           = MFC_FMT_RAW,
 		.num_planes     = 3,
-		.versions       = MFC_V12_BIT,
+		.versions       = MFC_V12PLUS_BITS,
 	},
 	{
 		.fourcc         = V4L2_PIX_FMT_YVU420M,
 		.codec_mode     = S5P_MFC_CODEC_NONE,
 		.type           = MFC_FMT_RAW,
 		.num_planes     = 3,
-		.versions       = MFC_V12_BIT,
+		.versions       = MFC_V12PLUS_BITS,
 	},
 	{
 		.fourcc		= V4L2_PIX_FMT_H264,

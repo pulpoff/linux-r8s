@@ -285,6 +285,11 @@ int s5p_mfc_init_hw(struct s5p_mfc_dev *dev)
 
 	mfc_debug(2, "MFC F/W version : %02xyy, %02xmm, %02xdd\n",
 		(ver >> 16) & 0xFF, (ver >> 8) & 0xFF, ver & 0xFF);
+	if (IS_MFCV13(dev)) {
+		ver = mfc_read(dev, S5P_FIMV_MFC_VERSION_V13);
+		if (ver != MFC_HW_VERSION_V13)
+			mfc_err("unexpected MFC hardware version %#x\n", ver);
+	}
 	s5p_mfc_clock_off(dev);
 	mfc_debug_leave();
 	return 0;
@@ -318,6 +323,9 @@ int s5p_mfc_sleep(struct s5p_mfc_dev *dev)
 		mfc_err("Failed to sleep\n");
 		return -EIO;
 	}
+	/* v10+: the firmware sleeps, the block may stop its clocks (vendor mfc_mfc_off) */
+	if (IS_MFCV10_PLUS(dev))
+		mfc_write(dev, 0x1, S5P_FIMV_MFC_CLOCK_OFF_V10);
 	s5p_mfc_clock_off(dev);
 	dev->int_cond = 0;
 	if (dev->int_err != 0 || dev->int_type !=
@@ -338,6 +346,14 @@ static int s5p_mfc_v8_wait_wakeup(struct s5p_mfc_dev *dev)
 	/* Release reset signal to the RISC */
 	dev->risc_on = 1;
 	mfc_write(dev, 0x1, S5P_FIMV_RISC_ON_V6);
+
+	/*
+	 * v10+ also needs its clocks let on, as s5p_mfc_init_hw() does: without
+	 * this the RISC never runs and a system sleep with an instance open
+	 * leaves the MFC dead (Exynos9820, MFC v13, 2026-11-08)
+	 */
+	if (IS_MFCV10_PLUS(dev))
+		mfc_write(dev, 0x0, S5P_FIMV_MFC_CLOCK_OFF_V10);
 
 	if (s5p_mfc_wait_for_done_dev(dev, S5P_MFC_R2H_CMD_FW_STATUS_RET)) {
 		mfc_err("Failed to reset MFCV8\n");
