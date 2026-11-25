@@ -688,11 +688,41 @@ static const struct power_supply_desc max77705_charger_psy_desc = {
 	.set_property = max77705_set_property,
 };
 
+/*
+ * The cable input coming and going, with the reason it went: CHGIN_DTLS.
+ * A source that sags below the UVLO drops out while the cable is still in
+ * (USB-C then says nothing), and comes back only above the UVLO again.
+ */
+static void max77705_chgin_check(struct max77705_charger_data *chg)
+{
+	static const char * const why[] = {
+		"VBUS below the UVLO", "VBUS too close to the battery",
+		"VBUS above the OVLO", "VBUS valid",
+	};
+	unsigned int ok, dtls;
+	bool on;
+
+	if (regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &ok) ||
+	    regmap_read(chg->regmap, MAX77705_CHG_REG_DETAILS_00, &dtls))
+		return;
+
+	on = ok & MAX77705_CHGIN_OK;
+	if (on == chg->chgin_on)
+		return;
+	chg->chgin_on = on;
+	dtls = (dtls & MAX77705_CHGIN_DTLS) >> MAX77705_CHGIN_DTLS_SHIFT;
+	if (on)
+		dev_info(chg->dev, "cable input on\n");
+	else
+		dev_info(chg->dev, "cable input off: %s\n", why[dtls]);
+}
+
 static void max77705_chgin_isr_work(struct work_struct *work)
 {
 	struct max77705_charger_data *chg =
 		container_of(work, struct max77705_charger_data, chgin_work);
 
+	max77705_chgin_check(chg);
 	mod_delayed_work(chg->wqueue, &chg->temp_work, 0);
 	/* an input that comes back gets its limit fitted again */
 	mod_delayed_work(chg->wqueue, &chg->aicl_work, msecs_to_jiffies(AICL_WORK_DELAY_MS));
@@ -1084,6 +1114,9 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 	ret = max77705_charger_initialize(chg);
 	if (ret)
 		return dev_err_probe(dev, ret, "failed to initialize charger IC\n");
+
+	/* before its interrupt: from here on only the interrupt work looks */
+	max77705_chgin_check(chg);
 
 	ret = devm_request_threaded_irq(dev, regmap_irq_get_virq(irq_data, MAX77705_CHGIN_I),
 					NULL, max77705_chgin_irq,

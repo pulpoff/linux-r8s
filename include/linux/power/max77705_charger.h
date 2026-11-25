@@ -226,6 +226,7 @@ struct max77705_charger_data {
 	struct power_supply_battery_info *bat_info;
 	struct workqueue_struct *wqueue;
 	struct work_struct	chgin_work;
+	bool			chgin_on;	/* CHGIN_OK as last logged */
 	struct delayed_work	wcin_work;
 	int			wcin_ma;	/* WCIN limit the ramp is at */
 	int			wcin_max_ma;	/* and where it stops */
