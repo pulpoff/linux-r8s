@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_EXYNOS990_CSIS
+	tristate "Exynos 990 MIPI CSI-2 receiver"
+	depends on V4L_PLATFORM_DRIVERS
+	depends on VIDEO_DEV && OF
+	depends on ARCH_EXYNOS || COMPILE_TEST
+	select MEDIA_CONTROLLER
+	select VIDEO_V4L2_SUBDEV_API
+	select V4L2_FWNODE
+	select VIDEOBUF2_DMA_CONTIG
+	help
+	  The camera receiver of the Exynos 990 (Galaxy S20 family): the
+	  CSIS v5.3 links and their write DMAs, giving raw Bayer frames to
+	  memory for a software ISP such as libcamera's.
