@@ -117,6 +117,18 @@
 			no-map;
 		};
 
+		/*
+		 * The camera receiver's frame buffers (not a stock region: free
+		 * RAM below 4 GiB, as the CSIS write DMAs take 32-bit
+		 * addresses). No-map, so that nothing else ever lives where
+		 * the DMAs write.
+		 */
+		camera_mem: camera@b6000000 {
+			compatible = "shared-dma-pool";
+			reg = <0 0xb6000000 0 0x4000000>;
+			no-map;
+		};
+
 		/* hypervisor code: the kernel runs at EL1 under it */
 		el2_code: el2-code@c1400000 {
 			reg = <0 0xc1400000 0 0x200000>;
@@ -297,6 +309,59 @@
 		off-on-delay-us = <300000>;
 	};
 
+	/* the rear ultrawide's analog supply: an LDO enabled by gpp5-2 (stock gpio_rcam2_avdd_ldo_en) */
+	cam_uw_avdd: regulator-cam-uw-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "cam-uw-avdd";
+		gpio = <&gpp5 2 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
+	/*
+	 * The rear ultrawide's I2C (stock hsi2c_45, a USI in CMGP, which has
+	 * no clock driver yet): bit-banged on the same two pins.
+	 */
+	i2c-cam-uw {
+		compatible = "i2c-gpio";
+		scl-gpios = <&gpm14 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		sda-gpios = <&gpm15 0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
+		i2c-gpio,delay-us = <2>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_uw_i2c>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/* S5K3L6, the rear ultrawide, on CSIS4 */
+		camera@2d {
+			compatible = "samsung,s5k3l6";
+			reg = <0x2d>;
+
+			/* CIS_CLK3 at 26 MHz, from the oscillator */
+			clocks = <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+			assigned-clocks = <&cmu_top CLK_MOUT_CMU_CIS_CLK3>,
+					  <&cmu_top CLK_DOUT_CMU_CIS_CLK3>;
+			assigned-clock-parents = <&oscclk>;
+			assigned-clock-rates = <0>, <26000000>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&cam_uw_mclk>;
+
+			reset-gpios = <&gpm33 0 GPIO_ACTIVE_LOW>;
+			avdd-supply = <&cam_uw_avdd>;
+			dovdd-supply = <&ldo17m>;
+			dvdd-supply = <&ldo8m>;
+
+			orientation = <1>;	/* back */
+
+			port {
+				s5k3l6_out: endpoint {
+					remote-endpoint = <&csis4_in>;
+					data-lanes = <1 2 3 4>;
+					link-frequencies = /bits/ 64 <598000000>;
+				};
+			};
+		};
+	};
+
 	gpio-keys {
 		compatible = "gpio-keys";
 
@@ -368,6 +433,25 @@
 				regulator-name = "sub-micbias";
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
+			};
+
+			/* the rear ultrawide's digital 1.05 V (stock VDDD_1.05V_WIDESUB) */
+			ldo8m: ldo8m {
+				regulator-name = "vddd-1p05-widesub";
+				regulator-min-microvolt = <1050000>;
+				regulator-max-microvolt = <1050000>;
+			};
+
+			/*
+			 * The cameras' IO 1.8 V (stock VDDIO_1.8V_CAM, shared by
+			 * the sensors): on from boot, and left on.
+			 */
+			ldo17m: ldo17m {
+				regulator-name = "vddio-1p8-cam";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <1800000>;
+				regulator-boot-on;
+				regulator-always-on;
 			};
 		};
 	};
@@ -811,6 +895,18 @@
 	};
 };
 
+&csis4 {
+	memory-region = <&camera_mem>;
+	status = "okay";
+
+	port {
+		csis4_in: endpoint {
+			remote-endpoint = <&s5k3l6_out>;
+			data-lanes = <1 2 3 4>;
+		};
+	};
+};
+
 &gpu {
 	status = "okay";
 };
@@ -898,6 +994,13 @@
 		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV3>;
 		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
 		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	/* the rear ultrawide's I2C, as GPIOs (the bus has its own pull-ups) */
+	cam_uw_i2c: cam-uw-i2c-pins {
+		samsung,pins = "gpm14-0", "gpm15-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_INPUT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 	};
 };
 
@@ -987,6 +1090,14 @@
 		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
 		samsung,pin-con-pdn = <EXYNOS_PIN_PDN_PREV>;
 		samsung,pin-pud-pdn = <EXYNOS_PIN_PULL_NONE>;
+	};
+
+	/* CIS_CLK3 out (stock sensor-mclk4-fn) */
+	cam_uw_mclk: cam-uw-mclk-pins {
+		samsung,pins = "gpc0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
 	};
 
 	wlan_en_pins: wlan-en-pins {
