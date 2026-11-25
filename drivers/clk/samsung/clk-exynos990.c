@@ -7,7 +7,10 @@
 
 #include <linux/clk-provider.h>
 #include <linux/of.h>
+#include <linux/io.h>
+#include <linux/of_address.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
 
 #include <dt-bindings/clock/samsung,exynos990.h>
 
@@ -21,6 +24,7 @@
 #define CLKS_NR_PERIC0 (CLK_GOUT_PERIC0_SYSREG_PCLK + 1)
 #define CLKS_NR_PERIC1 (CLK_GOUT_PERIC1_XIU_P_ACLK + 1)
 #define CLKS_NR_PERIS (CLK_GOUT_PERIS_OTP_CON_TOP_OSCCLK + 1)
+#define CLKS_NR_CSIS (CLK_GOUT_CSIS_XIU_D1_CSIS_ACLK + 1)
 
 /* ---- CMU_TOP ------------------------------------------------------------- */
 
@@ -1060,8 +1064,13 @@ static const struct samsung_gate_clock top_gate_clks[] __initconst = {
 	GATE(CLK_GOUT_CMU_CPUCL2_SWITCH, "gout_cmu_cpucl2_switch",
 	     "mout_cmu_cpucl2_switch", CLK_CON_GAT_GATE_CLKCMU_CPUCL2_SWITCH,
 	     21, CLK_IGNORE_UNUSED, 0),
+	/*
+	 * CMU_TOP's gates are MANUAL here, unlike the stock automatic gating.
+	 * pd_csis's power-off asks EL3 to save CSIS's TZPC, which reads that
+	 * block over this bus: its clock must not be gated then, so it stays on.
+	 */
 	GATE(CLK_GOUT_CMU_CSIS_BUS, "gout_cmu_csis_bus", "mout_cmu_csis_bus",
-	     CLK_CON_GAT_GATE_CLKCMU_CSIS_BUS, 21, 0, 0),
+	     CLK_CON_GAT_GATE_CLKCMU_CSIS_BUS, 21, CLK_IS_CRITICAL, 0),
 	GATE(CLK_GOUT_CMU_CSIS_OIS_MCU, "gout_cmu_csis_ois_mcu",
 	     "mout_cmu_csis_ois_mcu", CLK_CON_GAT_GATE_CLKCMU_CSIS_OIS_MCU,
 	     21, 0, 0),
@@ -2658,6 +2667,257 @@ static void __init exynos990_cmu_peris_init(struct device_node *np)
 CLK_OF_DECLARE(exynos990_cmu_peris, "samsung,exynos990-cmu-peris",
 	       exynos990_cmu_peris_init);
 
+/* ---- CMU_CSIS ------------------------------------------------------------ */
+
+/*
+ * Register offsets for CMU_CSIS (0x17000000), in pd_csis with the MIPI CSI-2
+ * receivers (CSIS0-5), their write DMAs, the PHYs and the two SysMMUs.
+ *
+ * Only registers the stock CAL defines are touched; the rest of the block is
+ * left alone (unknown offsets may be holes). As in CMU_MFC0, the gates are
+ * left in whatever mode S-Boot set (the CMU's automatic gating,
+ * CONTROLLER_OPTION bits 28/29): nothing here sets their MANUAL bit.
+ *
+ * The P-bus gates (the CMU's own pclk, D_TZPC, LHM_AXI_P, the BUSP reset
+ * synchroniser and SYSREG) are registered but must never be disabled: on
+ * the S10e, taking and releasing their ISPPRE twins killed the P-bus, and
+ * the next power-off of the domain (EL3 saving its TZPC) reset the phone.
+ * No consumer lists them, and they are not critical either, which would
+ * hold the CMU's runtime PM, and so pd_csis, on for good.
+ *
+ * pd_csis power-cycles; a cold CMU comes back with reset values, so runtime
+ * PM saves and restores exactly the stock PMU-CAL "csis_save" list: the two
+ * USER muxes, both dividers, the 40 QCH_CONs, the 6 MEMPG_CONs and the
+ * option register. (Stock also restores SYSREG_CSIS DRCG_EN/MEMCLK, which
+ * only save power; they are not touched here.)
+ */
+#define PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER				0x0600
+#define PLL_CON0_MUX_CLKCMU_CSIS_OIS_MCU_USER				0x0610
+#define CSIS_CMU_CSIS_CONTROLLER_OPTION					0x0800
+#define CLK_CON_DIV_DIV_CLK_CSIS_BUSP					0x1800
+#define CLK_CON_DIV_DIV_CLK_CSIS_BUS					0x1804
+#define CLK_CON_GAT_CLK_BLK_CSIS_UID_CSIS_CMU_CSIS_IPCLKPORT_PCLK		0x2000
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_C2_CSIS	0x2010
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS0	0x2014
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS1	0x2018
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS2	0x201c
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS3	0x2020
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS4	0x2024
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS5	0x2028
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS_DMA	0x202c
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_PDP_TOP	0x2030
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_D_TZPC_CSIS_IPCLKPORT_PCLK		0x2034
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHM_AXI_P_CSIS_IPCLKPORT_I_CLK	0x2054
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHS_AXI_D0_CSIS_IPCLKPORT_I_CLK	0x2068
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHS_AXI_D1_CSIS_IPCLKPORT_I_CLK	0x206c
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA0_CSIS_IPCLKPORT_ACLK	0x2084
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA0_CSIS_IPCLKPORT_PCLK	0x2088
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA1_CSIS_IPCLKPORT_ACLK	0x208c
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA1_CSIS_IPCLKPORT_PCLK	0x2090
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA0_IPCLKPORT_ACLK	0x20ac
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA0_IPCLKPORT_PCLK	0x20b0
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA1_IPCLKPORT_ACLK	0x20b4
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA1_IPCLKPORT_PCLK	0x20b8
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_RSTNSYNC_CLK_CSIS_BUSD_IPCLKPORT_CLK	0x20d4
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_RSTNSYNC_CLK_CSIS_BUSP_IPCLKPORT_CLK	0x20d8
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D0_CSIS_IPCLKPORT_CLK_S1	0x20e4
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D0_CSIS_IPCLKPORT_CLK_S2	0x20e8
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D1_CSIS_IPCLKPORT_CLK_S1	0x20ec
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D1_CSIS_IPCLKPORT_CLK_S2	0x20f0
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSREG_CSIS_IPCLKPORT_PCLK		0x20f4
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_VGEN_LITE_CSIS_IPCLKPORT_CLK	0x20f8
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_XIU_D0_CSIS_IPCLKPORT_ACLK		0x20fc
+#define CLK_CON_GAT_GOUT_BLK_CSIS_UID_XIU_D1_CSIS_IPCLKPORT_ACLK		0x2100
+
+/* stock S-Boot/CAL values, for a CMU found cold (see exynos990_cmu_csis_fixup) */
+#define CSIS_BUSP_DIV_STOCK		1	/* BUSP = BUS / 2 (blk_csis_nm) */
+#define CSIS_OPTION_STOCK		(BIT(29) | BIT(28))
+
+static const unsigned long csis_clk_regs[] __initconst = {
+	CLK_CON_DIV_DIV_CLK_CSIS_BUS,
+	CLK_CON_DIV_DIV_CLK_CSIS_BUSP,
+	PLL_CON0_MUX_CLKCMU_CSIS_OIS_MCU_USER,
+	PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER,
+	/* QCH_CON: VGEN_LITE ... CMU_CSIS, as stock lists them */
+	0x3110, 0x310c, 0x3108, 0x3104, 0x3100, 0x30fc, 0x30f8,
+	0x30e8, 0x30e4, 0x30e0, 0x30dc, 0x30d8, 0x30d4, 0x30d0,
+	0x30bc, 0x30b8, 0x30b4, 0x30b0, 0x30ac, 0x30a8, 0x30a4,
+	0x30a0, 0x309c, 0x3098, 0x3094, 0x3090, 0x308c, 0x3088,
+	0x3084, 0x3080, 0x307c, 0x3078, 0x3074, 0x3070, 0x306c,
+	0x3068, 0x3064, 0x3060, 0x305c, 0x3058,
+	/* MEMPG_CON: SYSMMU_D1_6 ... CSIS_PDP_0 */
+	0x3018, 0x3014, 0x3010, 0x300c, 0x3004, 0x3000,
+	CSIS_CMU_CSIS_CONTROLLER_OPTION,
+};
+
+PNAME(mout_csis_bus_user_p)	= { "oscclk", "dout_cmu_csis_bus" };
+
+static const struct samsung_mux_clock csis_mux_clks[] __initconst = {
+	MUX(CLK_MOUT_CSIS_BUS_USER, "mout_csis_bus_user",
+	    mout_csis_bus_user_p, PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER, 4, 1),
+};
+
+/* DIV_CLK_CSIS_BUS (0x1804) has no ratio field: the bus is the USER mux */
+static const struct samsung_div_clock csis_div_clks[] __initconst = {
+	DIV(CLK_DOUT_CSIS_BUSP, "dout_csis_busp", "mout_csis_bus_user",
+	    CLK_CON_DIV_DIV_CLK_CSIS_BUSP, 0, 3),
+};
+
+#define CSIS_GATE(_id, _name, _parent, _reg)				\
+	GATE(_id, _name, _parent, _reg, 21, CLK_IGNORE_UNUSED, 0)
+
+static const struct samsung_gate_clock csis_gate_clks[] __initconst = {
+	/* P-bus: never disabled, see above */
+	CSIS_GATE(CLK_GOUT_CSIS_CMU_CSIS_PCLK, "gout_csis_cmu_csis_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_CLK_BLK_CSIS_UID_CSIS_CMU_CSIS_IPCLKPORT_PCLK),
+	CSIS_GATE(CLK_GOUT_CSIS_D_TZPC_CSIS_PCLK, "gout_csis_d_tzpc_csis_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_D_TZPC_CSIS_IPCLKPORT_PCLK),
+	CSIS_GATE(CLK_GOUT_CSIS_LHM_AXI_P_CSIS_CLK, "gout_csis_lhm_axi_p_csis_clk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHM_AXI_P_CSIS_IPCLKPORT_I_CLK),
+	CSIS_GATE(CLK_GOUT_CSIS_RSTNSYNC_BUSP_CLK, "gout_csis_rstnsync_busp_clk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_RSTNSYNC_CLK_CSIS_BUSP_IPCLKPORT_CLK),
+	CSIS_GATE(CLK_GOUT_CSIS_SYSREG_CSIS_PCLK, "gout_csis_sysreg_csis_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSREG_CSIS_IPCLKPORT_PCLK),
+
+	/* the receivers and their DMA */
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_C2_CSIS_ACLK, "gout_csis_pdp_c2_csis_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_C2_CSIS),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS0_ACLK, "gout_csis_pdp_csis0_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS0),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS1_ACLK, "gout_csis_pdp_csis1_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS1),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS2_ACLK, "gout_csis_pdp_csis2_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS2),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS3_ACLK, "gout_csis_pdp_csis3_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS3),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS4_ACLK, "gout_csis_pdp_csis4_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS4),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS5_ACLK, "gout_csis_pdp_csis5_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS5),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_CSIS_DMA_ACLK, "gout_csis_pdp_csis_dma_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_CSIS_DMA),
+	CSIS_GATE(CLK_GOUT_CSIS_PDP_PDP_TOP_ACLK, "gout_csis_pdp_pdp_top_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_CSIS_PDP_IPCLKPORT_ACLK_PDP_TOP),
+
+	/* the two write paths to memory: SysMMU, QoS, PPMU, XIU, LH */
+	CSIS_GATE(CLK_GOUT_CSIS_LHS_AXI_D0_CSIS_CLK, "gout_csis_lhs_axi_d0_csis_clk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHS_AXI_D0_CSIS_IPCLKPORT_I_CLK),
+	CSIS_GATE(CLK_GOUT_CSIS_LHS_AXI_D1_CSIS_CLK, "gout_csis_lhs_axi_d1_csis_clk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHS_AXI_D1_CSIS_IPCLKPORT_I_CLK),
+	CSIS_GATE(CLK_GOUT_CSIS_PPMU_CSIS_DMA0_ACLK, "gout_csis_ppmu_csis_dma0_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA0_CSIS_IPCLKPORT_ACLK),
+	CSIS_GATE(CLK_GOUT_CSIS_PPMU_CSIS_DMA0_PCLK, "gout_csis_ppmu_csis_dma0_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA0_CSIS_IPCLKPORT_PCLK),
+	CSIS_GATE(CLK_GOUT_CSIS_PPMU_CSIS_DMA1_ACLK, "gout_csis_ppmu_csis_dma1_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA1_CSIS_IPCLKPORT_ACLK),
+	CSIS_GATE(CLK_GOUT_CSIS_PPMU_CSIS_DMA1_PCLK, "gout_csis_ppmu_csis_dma1_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_PPMU_CSIS_DMA1_CSIS_IPCLKPORT_PCLK),
+	CSIS_GATE(CLK_GOUT_CSIS_QE_CSIS_DMA0_ACLK, "gout_csis_qe_csis_dma0_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA0_IPCLKPORT_ACLK),
+	CSIS_GATE(CLK_GOUT_CSIS_QE_CSIS_DMA0_PCLK, "gout_csis_qe_csis_dma0_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA0_IPCLKPORT_PCLK),
+	CSIS_GATE(CLK_GOUT_CSIS_QE_CSIS_DMA1_ACLK, "gout_csis_qe_csis_dma1_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA1_IPCLKPORT_ACLK),
+	CSIS_GATE(CLK_GOUT_CSIS_QE_CSIS_DMA1_PCLK, "gout_csis_qe_csis_dma1_pclk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_QE_CSIS_DMA1_IPCLKPORT_PCLK),
+	CSIS_GATE(CLK_GOUT_CSIS_RSTNSYNC_BUSD_CLK, "gout_csis_rstnsync_busd_clk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_RSTNSYNC_CLK_CSIS_BUSD_IPCLKPORT_CLK),
+	CSIS_GATE(CLK_GOUT_CSIS_SYSMMU_D0_CSIS_CLK_S1, "gout_csis_sysmmu_d0_csis_clk_s1",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D0_CSIS_IPCLKPORT_CLK_S1),
+	CSIS_GATE(CLK_GOUT_CSIS_SYSMMU_D0_CSIS_CLK_S2, "gout_csis_sysmmu_d0_csis_clk_s2",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D0_CSIS_IPCLKPORT_CLK_S2),
+	CSIS_GATE(CLK_GOUT_CSIS_SYSMMU_D1_CSIS_CLK_S1, "gout_csis_sysmmu_d1_csis_clk_s1",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D1_CSIS_IPCLKPORT_CLK_S1),
+	CSIS_GATE(CLK_GOUT_CSIS_SYSMMU_D1_CSIS_CLK_S2, "gout_csis_sysmmu_d1_csis_clk_s2",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSMMU_D1_CSIS_IPCLKPORT_CLK_S2),
+	CSIS_GATE(CLK_GOUT_CSIS_VGEN_LITE_CSIS_CLK, "gout_csis_vgen_lite_csis_clk",
+		  "dout_csis_busp",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_VGEN_LITE_CSIS_IPCLKPORT_CLK),
+	CSIS_GATE(CLK_GOUT_CSIS_XIU_D0_CSIS_ACLK, "gout_csis_xiu_d0_csis_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_XIU_D0_CSIS_IPCLKPORT_ACLK),
+	CSIS_GATE(CLK_GOUT_CSIS_XIU_D1_CSIS_ACLK, "gout_csis_xiu_d1_csis_aclk",
+		  "mout_csis_bus_user",
+		  CLK_CON_GAT_GOUT_BLK_CSIS_UID_XIU_D1_CSIS_IPCLKPORT_ACLK),
+};
+
+static const struct samsung_cmu_info csis_cmu_info __initconst = {
+	.mux_clks		= csis_mux_clks,
+	.nr_mux_clks		= ARRAY_SIZE(csis_mux_clks),
+	.div_clks		= csis_div_clks,
+	.nr_div_clks		= ARRAY_SIZE(csis_div_clks),
+	.gate_clks		= csis_gate_clks,
+	.nr_gate_clks		= ARRAY_SIZE(csis_gate_clks),
+	.nr_clk_ids		= CLKS_NR_CSIS,
+	.clk_regs		= csis_clk_regs,
+	.nr_clk_regs		= ARRAY_SIZE(csis_clk_regs),
+	.clk_name		= "bus",
+};
+
+/*
+ * A CMU_CSIS that S-Boot did not set up (BUSP or the option register at
+ * their reset value 0) gets the stock values before its clocks are
+ * registered, so the save list never captures a cold state. Reads and
+ * writes only the two registers concerned, and logs what it found, with
+ * the USER mux and the P-bus gates' words.
+ */
+static void __init exynos990_cmu_csis_fixup(struct platform_device *pdev)
+{
+	void __iomem *base;
+	u32 busp, opt;
+
+	base = of_iomap(pdev->dev.of_node, 0);
+	if (!base)
+		return;
+
+	busp = readl(base + CLK_CON_DIV_DIV_CLK_CSIS_BUSP);
+	opt = readl(base + CSIS_CMU_CSIS_CONTROLLER_OPTION);
+	dev_info(&pdev->dev, "S-Boot left BUSP %#x, option %#x, USER mux %#x, P-gates %#x %#x %#x %#x %#x\n",
+		 busp, opt, readl(base + PLL_CON0_MUX_CLKCMU_CSIS_BUS_USER),
+		 readl(base + CLK_CON_GAT_CLK_BLK_CSIS_UID_CSIS_CMU_CSIS_IPCLKPORT_PCLK),
+		 readl(base + CLK_CON_GAT_GOUT_BLK_CSIS_UID_D_TZPC_CSIS_IPCLKPORT_PCLK),
+		 readl(base + CLK_CON_GAT_GOUT_BLK_CSIS_UID_LHM_AXI_P_CSIS_IPCLKPORT_I_CLK),
+		 readl(base + CLK_CON_GAT_GOUT_BLK_CSIS_UID_RSTNSYNC_CLK_CSIS_BUSP_IPCLKPORT_CLK),
+		 readl(base + CLK_CON_GAT_GOUT_BLK_CSIS_UID_SYSREG_CSIS_IPCLKPORT_PCLK));
+
+	if (!(busp & 0x7))
+		writel((busp & ~0x7) | CSIS_BUSP_DIV_STOCK,
+		       base + CLK_CON_DIV_DIV_CLK_CSIS_BUSP);
+	if (!opt)
+		writel(CSIS_OPTION_STOCK, base + CSIS_CMU_CSIS_CONTROLLER_OPTION);
+
+	iounmap(base);
+}
+
 /* ----- platform_driver ----- */
 
 static int __init exynos990_cmu_probe(struct platform_device *pdev)
@@ -2700,3 +2960,49 @@ static int __init exynos990_cmu_init(void)
 }
 
 core_initcall(exynos990_cmu_init);
+
+/*
+ * CMU_CSIS is in pd_csis, so unlike the CMUs above its probe can be deferred,
+ * and everything it runs (the Samsung clock registration, its tables) is
+ * __init: a deferred retry after the kernel's init memory is freed would run
+ * freed code. Bind it once with platform_driver_probe(), after the devices
+ * and their power domains are populated: no deferred probe, and any later
+ * bind attempt fails instead of calling the probe.
+ */
+static int __init exynos990_cmu_csis_probe(struct platform_device *pdev)
+{
+	/* in a power domain: runtime PM, no gate set to MANUAL */
+	exynos990_cmu_csis_fixup(pdev);
+	return exynos_arm64_register_cmu_pm(pdev, false);
+}
+
+static const struct of_device_id exynos990_cmu_csis_of_match[] = {
+	{
+		.compatible = "samsung,exynos990-cmu-csis",
+		.data = &csis_cmu_info,
+	},
+	{ },
+};
+
+static const struct dev_pm_ops exynos990_cmu_csis_pm_ops = {
+	SET_RUNTIME_PM_OPS(exynos_arm64_cmu_suspend, exynos_arm64_cmu_resume,
+			   NULL)
+	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
+				      pm_runtime_force_resume)
+};
+
+static struct platform_driver exynos990_cmu_csis_driver = {
+	.driver	= {
+		.name = "exynos990-cmu-csis",
+		.of_match_table = exynos990_cmu_csis_of_match,
+		.pm = &exynos990_cmu_csis_pm_ops,
+	},
+};
+
+static int __init exynos990_cmu_csis_init(void)
+{
+	return platform_driver_probe(&exynos990_cmu_csis_driver,
+				     exynos990_cmu_csis_probe);
+}
+
+subsys_initcall(exynos990_cmu_csis_init);
