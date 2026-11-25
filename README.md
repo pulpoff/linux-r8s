@@ -93,4 +93,37 @@ tried cannot touch the phone's storage; enable `ufs@13100000` and `phy@13104000`
 with `fdtput -t s exynos990-r8s.dtb /soc@0/ufs@13100000 status okay`, and the same for the PHY)
 to mount it.
 
-The boot chain (stub, U-Boot, the boot image tools and the initramfs) is not in this repository yet.
+The initramfs and the device tree of a release
+----------------------------------------------
+
+`r8s_defconfig` builds the initramfs into the kernel (the S20 FE's S-Boot only starts a kernel that carries it):
+`CONFIG_INITRAMFS_SOURCE="initramfs/root initramfs/extra.list"`, relative to the **build directory** (`O=`), with the
+files given to root. That tree is made by [VibeOS](https://github.com/pulpoff/vibeos)'s
+[`image/s20/build-initramfs.sh`](https://github.com/pulpoff/vibeos/blob/ec120ee4eff535609d776cc3867494b15e6172a7/image/s20/build-initramfs.sh)
+from `image/s20/init` and `image/s20/reboot2.c` (commit `ec120ee4eff5`; the released `init` is that file byte for byte)
+and Debian trixie's arm64 packages. [`initramfs/MANIFEST`](initramfs/MANIFEST) lists every binary, library and data
+file of the tree with its sha256, the package and version it comes from, and the sha256 of that `.deb`:
+
+    umask 002
+    # a VibeOS checkout at ec120ee4eff5; DEBS: the arm64 .debs named in initramfs/MANIFEST; REGDB_FROM: a
+    # Debian image with wireless-regdb 2026.09.03-1 (its upstream-signed regulatory.db and .p7s)
+    S20_INITRAMFS_DEBS=$DEBS REGDB_FROM=$IMG sh vibeos/image/s20/build-initramfs.sh out/initramfs
+    awk '!/^#/ {print $1 "  " $3}' initramfs/MANIFEST | (cd out/initramfs/root && sha256sum -c)
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out r8s_defconfig
+    make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- O=out -j$(nproc) Image modules exynos/exynos990-r8s.dtb
+
+`reboot2` is built from `reboot2.c` with `aarch64-linux-gnu-gcc -static -Os -s` (Debian's GCC 14.2.0-19 gives the
+sha256 in the manifest). The kernel embeds the files' modification times, so the Image is byte-identical only if the
+tree's mtimes are those of the release build. Root has no password; the login shells (telnet, SSH on 172.16.43.1 and a
+shell on the USB serial port) start only when the command line has `r8s.debug`.
+
+The device tree the releases boot has UFS switched on, and the boot image's FIT carries it as
+`exynos990-r8s-r1-ufs.dtb`: the `exynos990-r8s.dtb` this tree builds, with two properties changed after the build:
+
+    fdtput -t s out/arch/arm64/boot/dts/exynos/exynos990-r8s.dtb /soc@0/ufs@13100000 status okay
+    fdtput -t s out/arch/arm64/boot/dts/exynos/exynos990-r8s.dtb /soc@0/phy@13104000 status okay
+
+(Setting the two nodes to "okay" in the DT source gives the same tree, but 6 bytes of padding differ from the
+`fdtput` result; the file with the `fdtput` edit is the released one.)
+
+The boot chain (stub, U-Boot and the boot image tools) is not in this repository yet.
