@@ -121,11 +121,12 @@
 		 * The camera receiver's frame buffers (not a stock region: free
 		 * RAM below 4 GiB, as the CSIS write DMAs take 32-bit
 		 * addresses). No-map, so that nothing else ever lives where
-		 * the DMAs write.
+		 * the DMAs write. Clear of the kernel U-Boot loads at 0xa0000000
+		 * and of the FDT it relocates below itself (0xb7a1c000 on ub13).
 		 */
-		camera_mem: camera@b6000000 {
+		camera_mem: camera@b0000000 {
 			compatible = "shared-dma-pool";
-			reg = <0 0xb6000000 0 0x4000000>;
+			reg = <0 0xb0000000 0 0x4000000>;
 			no-map;
 		};
 
@@ -442,16 +443,11 @@
 				regulator-max-microvolt = <1050000>;
 			};
 
-			/*
-			 * The cameras' IO 1.8 V (stock VDDIO_1.8V_CAM, shared by
-			 * the sensors): on from boot, and left on.
-			 */
+			/* the cameras' IO 1.8 V (stock VDDIO_1.8V_CAM, shared by the sensors) */
 			ldo17m: ldo17m {
 				regulator-name = "vddio-1p8-cam";
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
-				regulator-boot-on;
-				regulator-always-on;
 			};
 		};
 	};
