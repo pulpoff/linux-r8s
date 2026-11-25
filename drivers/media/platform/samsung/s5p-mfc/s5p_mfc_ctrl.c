@@ -285,9 +285,11 @@ int s5p_mfc_init_hw(struct s5p_mfc_dev *dev)
 
 	mfc_debug(2, "MFC F/W version : %02xyy, %02xmm, %02xdd\n",
 		(ver >> 16) & 0xFF, (ver >> 8) & 0xFF, ver & 0xFF);
+	if (IS_MFCV14(dev))
+		dev->fw_date = ver & 0xffffff;
 	if (IS_MFCV13(dev)) {
 		ver = mfc_read(dev, S5P_FIMV_MFC_VERSION_V13);
-		if (ver != MFC_HW_VERSION_V13)
+		if (ver != dev->variant->hw_version)
 			mfc_err("unexpected MFC hardware version %#x\n", ver);
 	}
 	s5p_mfc_clock_off(dev);

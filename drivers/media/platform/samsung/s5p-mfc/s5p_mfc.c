@@ -1755,6 +1755,19 @@ static struct s5p_mfc_variant mfc_drvdata_v13 = {
 	.fw_name[0]     = "s5p-mfc-v13.fw",
 	.clk_names	= {"mfc"},
 	.num_clocks	= 1,
+	.hw_version	= MFC_HW_VERSION_V13,
+};
+
+/* the context buffer sizes of the stock Exynos 990 driver are the v13 ones */
+static struct s5p_mfc_variant mfc_drvdata_v14 = {
+	.version        = MFC_VERSION_V14,
+	.version_bit    = MFC_V14_BIT,
+	.port_num       = MFC_NUM_PORTS_V13,
+	.buf_size       = &buf_size_v13,
+	.fw_name[0]     = "s5p-mfc-v14.fw",
+	.clk_names	= {"mfc"},
+	.num_clocks	= 1,
+	.hw_version	= MFC_HW_VERSION_V14,
 };
 
 static const struct of_device_id exynos_mfc_match[] = {
@@ -1785,6 +1798,9 @@ static const struct of_device_id exynos_mfc_match[] = {
 	}, {
 		.compatible = "samsung,exynos9820-mfc",
 		.data = &mfc_drvdata_v13,
+	}, {
+		.compatible = "samsung,exynos990-mfc",
+		.data = &mfc_drvdata_v14,
 	},
 	{},
 };

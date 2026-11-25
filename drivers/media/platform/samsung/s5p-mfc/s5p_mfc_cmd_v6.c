@@ -6,6 +6,8 @@
  *		http://www.samsung.com/
  */
 
+#include <linux/iopoll.h>
+
 #include "s5p_mfc_common.h"
 
 #include "s5p_mfc_cmd.h"
@@ -14,9 +16,31 @@
 #include "s5p_mfc_opr.h"
 #include "s5p_mfc_cmd_v6.h"
 
+/*
+ * v14 firmware from 2019-01-22 on clears a "ready" bit while it is busy and
+ * takes a command only once the bit is set again (the stock driver's
+ * wait_fw_status). The date is known after the first SYS_INIT; that first
+ * one goes without the wait, as in the stock driver.
+ */
+static void s5p_mfc_wait_fw_status_v14(struct s5p_mfc_dev *dev)
+{
+	u32 val;
+
+	if (!IS_MFCV14(dev) || dev->fw_date < MFC_FW_DATE_WAIT_STATUS_V14)
+		return;
+
+	/* atomic: commands are also issued from the interrupt handler */
+	if (readl_poll_timeout_atomic(dev->regs_base + S5P_FIMV_FW_STATUS_INFO_V14,
+				      val, val & S5P_FIMV_FW_STATUS_READY_V14,
+				      1, MFC_BW_TIMEOUT * USEC_PER_MSEC))
+		mfc_err("timeout waiting for the firmware to be ready\n");
+}
+
 static int s5p_mfc_cmd_host2risc_v6(struct s5p_mfc_dev *dev, int cmd)
 {
 	mfc_debug(2, "Issue the command: %d\n", cmd);
+
+	s5p_mfc_wait_fw_status_v14(dev);
 
 	/* Reset RISC2HOST command */
 	mfc_write(dev, 0x0, S5P_FIMV_RISC2HOST_CMD_V6);

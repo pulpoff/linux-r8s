@@ -76,4 +76,16 @@
 #define S5P_FIMV_D_SEI_RECOVERY_SHIFT_V13	2
 #define MFC_CONCEAL_COLOR_V13			0x8020000
 
+/*
+ * MFCv14 (Exynos 990): the v13 host interface and context buffer sizes
+ * (the stock drivers of both use the same values). Firmware from
+ * 2019-01-22 on wants the host to wait for its "ready" bit before each
+ * command, as the stock driver's wait_fw_status feature does.
+ */
+#define MFC_VERSION_V14			0xE0
+#define MFC_HW_VERSION_V14		0x14000100
+#define S5P_FIMV_FW_STATUS_INFO_V14	0xf0a4
+#define S5P_FIMV_FW_STATUS_READY_V14	BIT(0)
+#define MFC_FW_DATE_WAIT_STATUS_V14	0x190122
+
 #endif /*_REGS_MFC_V12_H*/
