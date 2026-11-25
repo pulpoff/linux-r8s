@@ -12,8 +12,10 @@
 #include <linux/arm-smccc.h>
 #include <linux/io.h>
 #include <linux/err.h>
+#include <linux/kstrtox.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/string.h>
 #include <linux/pm_domain.h>
 #include <linux/delay.h>
 #include <linux/of.h>
@@ -49,6 +51,56 @@ struct exynos_pm_domain {
 /* bring-up switch: lets the power-on be tested with and without the SMC */
 static bool tzpc_smc = true;
 module_param(tzpc_smc, bool, 0644);
+
+/*
+ * bring-up switch: domains (by label, comma-separated) that are never powered
+ * off, e.g. exynos_pm_domains.keep_on=MFC0 for a block's first boot, before
+ * its first power cycle is tried. Writing 1 to keep_on_release lets them power
+ * off again from then on (at the next runtime suspend in the domain), so the
+ * first power cycle can be tried without another boot.
+ */
+static char *keep_on;
+module_param(keep_on, charp, 0444);
+
+#define EXYNOS_PD_MAX_KEPT	4
+static struct generic_pm_domain *kept_pd[EXYNOS_PD_MAX_KEPT];
+
+static int exynos_pd_keep_on_release(const char *val,
+				     const struct kernel_param *kp)
+{
+	bool release;
+	int i, ret;
+
+	ret = kstrtobool(val, &release);
+	if (ret || !release)
+		return ret;
+
+	for (i = 0; i < EXYNOS_PD_MAX_KEPT && kept_pd[i]; i++) {
+		kept_pd[i]->flags &= ~GENPD_FLAG_ALWAYS_ON;
+		pr_info("Power domain %s: no longer kept on\n", kept_pd[i]->name);
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops exynos_pd_keep_on_release_ops = {
+	.set = exynos_pd_keep_on_release,
+};
+module_param_cb(keep_on_release, &exynos_pd_keep_on_release_ops, NULL, 0200);
+
+static bool exynos_pd_keep_on(const char *name)
+{
+	const char *p = keep_on;
+	size_t n = strlen(name);
+
+	while (p && *p) {
+		if (!strncmp(p, name, n) && (p[n] == ',' || !p[n]))
+			return true;
+		p = strchr(p, ',');
+		if (p)
+			p++;
+	}
+	return false;
+}
 
 static int exynos_pd_tzpc(struct exynos_pm_domain *pd, unsigned long mode)
 {
@@ -200,6 +252,18 @@ static int exynos_pd_probe(struct platform_device *pdev)
 		exynos_pd_power_off(&pd->pd);
 
 	on = readl_relaxed(pd->base + 0x4) & pd->local_pwr_cfg;
+
+	if (on && exynos_pd_keep_on(pd->pd.name)) {
+		int i;
+
+		for (i = 0; i < EXYNOS_PD_MAX_KEPT && kept_pd[i]; i++)
+			;
+		if (i < EXYNOS_PD_MAX_KEPT) {
+			kept_pd[i] = &pd->pd;
+			pd->pd.flags |= GENPD_FLAG_ALWAYS_ON;
+			pr_info("Power domain %s: kept on (keep_on)\n", pd->pd.name);
+		}
+	}
 
 	pm_genpd_init(&pd->pd, NULL, !on);
 	ret = of_genpd_add_provider_simple(np, &pd->pd);
