@@ -568,8 +568,9 @@ static int max77705_chg_get_property(struct power_supply *psy,
  */
 static int max77705_set_input_current(struct max77705_charger_data *chg, int ua)
 {
+	/* code n is (n + 1) x 25 mA, as max77705_get_input_current() reads it */
 	unsigned int lim = clamp_val(ua, MAX77705_CURRENT_CHGIN_MIN,
-				     MAX77705_CURRENT_CHGIN_MAX) / MAX77705_CURRENT_CHGIN_STEP;
+				     MAX77705_CURRENT_CHGIN_MAX) / MAX77705_CURRENT_CHGIN_STEP - 1;
 	int err = 0;
 
 	mutex_lock(&chg->aicl_lock);
