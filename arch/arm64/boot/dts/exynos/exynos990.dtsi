@@ -1097,6 +1097,15 @@
 			};
 		};
 
+		pd_csis: power-domain@15861d80 {
+			compatible = "samsung,exynos990-pd";
+			reg = <0x15861d80 0x20>;
+			#power-domain-cells = <0>;
+			label = "CSIS";
+			/* "need_smc" of the vendor DT's pd-csis */
+			samsung,tzpc-base = <0x17010204>;
+		};
+
 		pd_g3d: power-domain@15862200 {
 			compatible = "samsung,exynos990-pd";
 			reg = <0x15862200 0x20>;
@@ -1141,6 +1150,67 @@
 			clocks = <&oscclk>;
 			clock-names = "adc";
 			#io-channel-cells = <1>;
+			status = "disabled";
+		};
+
+		/*
+		 * CMU_CSIS, in pd_csis with the camera receivers. Its USER mux
+		 * takes CMU_TOP's CSIS bus clock, as stock sets it.
+		 */
+		cmu_csis: clock-controller@17000000 {
+			compatible = "samsung,exynos990-cmu-csis";
+			reg = <0x17000000 0x8000>;
+			#clock-cells = <1>;
+
+			clock-names = "oscclk", "bus";
+			clocks = <&oscclk>,
+				 <&cmu_top CLK_DOUT_CMU_CSIS_BUS>;
+			assigned-clocks = <&cmu_csis CLK_MOUT_CSIS_BUS_USER>;
+			assigned-clock-parents = <&cmu_top CLK_DOUT_CMU_CSIS_BUS>;
+			power-domains = <&pd_csis>;
+		};
+
+		/*
+		 * CSIS4, a CSIS v5.3 MIPI CSI-2 link on the D/C-combo PHY
+		 * csi4 (used in D-PHY mode), written to memory by WDMA0 (its
+		 * VC0 and common registers). The PHYs' shared bias, the WDMAs'
+		 * common top, SYSREG_CSIS (the PHY resets and the WDMA input
+		 * muxes) and the PMU's MIPI PHY isolation word are shared with
+		 * the other links. The SysMMUs are not used: the WDMA writes
+		 * 32-bit physical addresses.
+		 */
+		csis4: csis@17070000 {
+			compatible = "samsung,exynos990-csis";
+			reg = <0x17070000 0x1000>,
+			      <0x170c1000 0x500>,
+			      <0x170d2300 0x500>,
+			      <0x170d1000 0x10>,
+			      <0x170c0000 0x100>,
+			      <0x17020000 0x1000>,
+			      <0x15860730 0x4>;
+			reg-names = "csis", "wdma", "phy", "phy-bias", "dma-top",
+				    "sysreg", "pmu-iso";
+			interrupts = <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>,
+				     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-names = "csis", "dma";
+			clocks = <&cmu_csis CLK_GOUT_CSIS_PDP_CSIS4_ACLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_PDP_CSIS_DMA_ACLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_PDP_PDP_TOP_ACLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_QE_CSIS_DMA0_ACLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_XIU_D0_CSIS_ACLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_XIU_D1_CSIS_ACLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_SYSMMU_D0_CSIS_CLK_S1>,
+				 <&cmu_csis CLK_GOUT_CSIS_SYSMMU_D1_CSIS_CLK_S1>,
+				 <&cmu_csis CLK_GOUT_CSIS_LHS_AXI_D0_CSIS_CLK>,
+				 <&cmu_csis CLK_GOUT_CSIS_LHS_AXI_D1_CSIS_CLK>;
+			clock-names = "csis", "dma", "pdp-top", "qe-dma0",
+				      "xiu-d0", "xiu-d1", "sysmmu-d0", "sysmmu-d1",
+				      "axi-d0", "axi-d1";
+			power-domains = <&pd_csis>;
+			samsung,csis-id = <4>;
+			samsung,wdma-id = <0>;
+			samsung,phy-reset-bit = <2>;
+			samsung,dc-combo-phy;
 			status = "disabled";
 		};
 
