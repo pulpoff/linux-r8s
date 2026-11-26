@@ -19,6 +19,14 @@
  * The status registers are polled every 2 s when the device has no
  * interrupt; with one (the MAX77705 interrupt source USBC), every change is
  * handled at once and the battery temperature is checked every 30 s.
+ *
+ * A dock or hub that offers DisplayPort is put into DP alt mode (pin
+ * assignment D: two DP lanes, USB on the rest) once the PD contract stands
+ * with us as the power sink and data host, as the stock kernel's
+ * max77705_alternate.c does: SET_ALTERNATEMODE, then Discover Identity (the
+ * firmware runs Discover SVIDs and Modes itself), Enter Mode and DP Configure
+ * through its VDM opcode. The DP transmitter's driver finds the sink over
+ * AUX by itself. Alt mode ends with the attach, and starts again on the next.
  */
 
 #include <linux/bitfield.h>
@@ -51,6 +59,7 @@
 /* offsets in the status block read from 0x06 */
 #define ST_BC		(0x08 - MAX77705_USBC_STATUS1)
 #define ST_CC0		(0x0a - MAX77705_USBC_STATUS1)
+#define ST_CC1		(0x0b - MAX77705_USBC_STATUS1)
 #define ST_PD1		(0x0d - MAX77705_USBC_STATUS1)
 #define ST_LEN		8
 
@@ -59,6 +68,8 @@
 #define CC0_ISTAT			GENMASK(5, 4)
 #define CC0_STAT			GENMASK(2, 0)
 #define PD1_PSRDY			BIT(4)
+#define PD1_DFP				BIT(7)
+#define CC1_ALTMODE			BIT(0)
 
 enum { CHGTYP_NONE, CHGTYP_SDP, CHGTYP_CDP, CHGTYP_DCP };
 enum { CCSTAT_NONE, CCSTAT_SINK, CCSTAT_SOURCE };
@@ -66,6 +77,14 @@ enum { CCI_NOT_UFP, CCI_DEFAULT, CCI_1_5A, CCI_3_0A };
 
 #define OP_CURRENT_SRCCAP		0x30
 #define OP_SRCCAP_REQUEST		0x32
+#define OP_VDM_REQUEST			0x48	/* send a structured VDM */
+#define OP_VDM_RESPONSE			0x4b	/* the last VDM of a kind the firmware saw */
+#define OP_SET_ALTERNATEMODE		0x55
+#define ALTMODE_SRC_VDM			3	/* as stock: the AP drives the VDMs */
+#define VDM_ATTENTION			6
+#define DP_STATUS_HPD			BIT(7)	/* DP Status VDO, from an Attention */
+#define DP_ALTMODE_TRIES		3
+#define DP_ALTMODE_RETRY_MS		20000
 #define OP_DATA_MAX			32
 #define MAX_SRC_PDOS			7
 
@@ -138,6 +157,8 @@ struct max77705_usbc {
 	bool requested;			/* asked for the best PDO in this attach */
 	bool recheck;			/* the answer to that is due */
 	bool event;			/* a status change not handled yet */
+	unsigned int dp_tries;		/* DP alt mode entries in this attach */
+	unsigned long dp_next;		/* jiffies: not before then */
 	char why[48];
 
 	/* what the charger was given */
@@ -148,6 +169,10 @@ struct max77705_usbc {
 	int ilim_ua, cc_ua;
 	int saved_ilim_ua, saved_cc_ua;
 };
+
+static bool dp_altmode = true;
+module_param(dp_altmode, bool, 0644);
+MODULE_PARM_DESC(dp_altmode, "put a DisplayPort dock or hub into DP alt mode (pin D)");
 
 static char *battery_zone = "battery-thermal";
 module_param(battery_zone, charp, 0444);
@@ -448,6 +473,51 @@ static void max77705_usbc_apply(struct max77705_usbc *u)
 	dev_info(u->dev, "charger: input %d mA, charge %d mA\n", u->ilim_ua / 1000, u->cc_ua / 1000);
 }
 
+/*
+ * DisplayPort alt mode, pin assignment D, as stock's max77705_alternate.c
+ * brings it up: the firmware gets the VDMs from us (SET_ALTERNATEMODE 3), we
+ * ask for the partner's identity (it then discovers the SVIDs and modes
+ * itself), enter the DP mode (SVID 0xff01, mode 1) and configure it (UFP_U
+ * as UFP_D, DP 1.3 signalling, pin D). The partner's Attention carries the
+ * DP status with the HPD state. Sleeps; called with the lock held.
+ */
+static void max77705_usbc_dp_altmode(struct max77705_usbc *u)
+{
+	static const u8 identity[] = { 0x09, 0x01, 0x80, 0x00, 0xff };
+	static const u8 enter[] = { 0x09, 0x04, 0x81, 0x01, 0xff };
+	static const u8 configure[] = { 0x0a, 0x11, 0x81, 0x01, 0xff, 0x06, 0x08, 0x00, 0x00 };
+	u8 mode = ALTMODE_SRC_VDM, kind = VDM_ATTENTION, resp[17];
+	unsigned int cc1;
+	int ret;
+
+	u->dp_tries++;
+	u->dp_next = jiffies + msecs_to_jiffies(DP_ALTMODE_RETRY_MS);
+	ret = max77705_usbc_opcode(u, OP_SET_ALTERNATEMODE, &mode, 1, resp, 1);
+	if (!ret)
+		ret = max77705_usbc_opcode(u, OP_VDM_REQUEST, identity, sizeof(identity), resp, 16);
+	if (!ret) {
+		msleep(1000);
+		ret = max77705_usbc_opcode(u, OP_VDM_REQUEST, enter, sizeof(enter), resp, 16);
+	}
+	if (!ret) {
+		msleep(1000);
+		ret = max77705_usbc_opcode(u, OP_VDM_REQUEST, configure, sizeof(configure), resp, 16);
+	}
+	if (ret) {
+		dev_warn(u->dev, "DisplayPort alt mode, try %u: %d\n", u->dp_tries, ret);
+		return;
+	}
+	msleep(1000);
+	if (regmap_read(u->regmap, MAX77705_USBC_STATUS1 + ST_CC1, &cc1))
+		cc1 = 0;
+	if (!max77705_usbc_opcode(u, OP_VDM_RESPONSE, &kind, 1, resp, 16))
+		dev_info(u->dev, "DisplayPort alt mode %s (try %u), pin D, attention %*ph: HPD %s\n",
+			 cc1 & CC1_ALTMODE ? "entered" : "not entered", u->dp_tries, 8, &resp[1],
+			 resp[7] & DP_STATUS_HPD ? "high" : "low");
+	if (cc1 & CC1_ALTMODE)
+		u->dp_tries = DP_ALTMODE_TRIES;		/* done for this attach */
+}
+
 static void max77705_usbc_update(struct max77705_usbc *u)
 {
 	bool online, was_online = u->online;
@@ -472,6 +542,7 @@ static void max77705_usbc_update(struct max77705_usbc *u)
 		u->npdos = 0;
 		u->sel = 0;
 		u->requested = false;
+		u->dp_tries = 0;
 		u->online = false;
 		u->usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
 		u->mv = 0;
@@ -569,6 +640,14 @@ static void max77705_usbc_update(struct max77705_usbc *u)
 		power_supply_changed(u->psy);
 	}
 	max77705_usbc_apply(u);
+
+	/* a dock with DisplayPort: once we sink its power with a PD contract and are the data host */
+	if (dp_altmode && ccstat == CCSTAT_SINK && (st[ST_PD1] & (PD1_PSRDY | PD1_DFP)) == (PD1_PSRDY | PD1_DFP) &&
+	    !(st[ST_CC1] & CC1_ALTMODE) && u->dp_tries < DP_ALTMODE_TRIES &&
+	    (!u->dp_tries || time_after(jiffies, u->dp_next))) {
+		max77705_usbc_dp_altmode(u);
+		u->event = true;	/* look again soon: the next try, or the new state */
+	}
 }
 
 static void max77705_usbc_work(struct work_struct *work)
