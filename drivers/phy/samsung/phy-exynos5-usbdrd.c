@@ -1516,6 +1516,15 @@ exynos5_usbdrd_usb_v3p1_pipe_override(struct exynos5_usbdrd_phy *phy_drd)
 	writel(reg, regs_base + EXYNOS850_DRD_SECPMACTL);
 }
 
+/*
+ * The HS transmitter's DC level on the Exynos990: the table below has 7, the
+ * Galaxy S20 FE's stock kernel 12. Taken at the next PHY init.
+ */
+static int exynos990_hs_txvref = -1;
+module_param(exynos990_hs_txvref, int, 0644);
+MODULE_PARM_DESC(exynos990_hs_txvref, "Exynos990 HS TXVREF tune 0-15 at the next PHY init (-1: the table's 7)");
+static const struct exynos5_usbdrd_phy_drvdata exynos990_usbdrd_phy;
+
 static void exynos850_usbdrd_utmi_init(struct exynos5_usbdrd_phy *phy_drd)
 {
 	void __iomem *regs_base = phy_drd->reg_phy;
@@ -1598,6 +1607,12 @@ static void exynos850_usbdrd_utmi_init(struct exynos5_usbdrd_phy *phy_drd)
 	if (phy_drd->drv_data->phy_tunes)
 		exynos5_usbdrd_apply_phy_tunes(phy_drd,
 					       PTS_UTMI_POSTINIT);
+	if (phy_drd->drv_data == &exynos990_usbdrd_phy && exynos990_hs_txvref >= 0) {
+		reg = readl(regs_base + EXYNOS850_DRD_HSPPARACON);
+		reg &= ~HSPPARACON_TXVREF;
+		reg |= FIELD_PREP(HSPPARACON_TXVREF, exynos990_hs_txvref & 0xf);
+		writel(reg, regs_base + EXYNOS850_DRD_HSPPARACON);
+	}
 
 	/* Power up PHY analog blocks */
 	reg = readl(regs_base + EXYNOS850_DRD_HSP_TEST);
