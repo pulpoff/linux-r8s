@@ -104,6 +104,7 @@
 #define SENSOR_PROX		7
 #define SENSOR_LIGHT		9
 #define SENSOR_TYPES		51
+#define SENSOR_NONE		0xff	/* a slot with no sensor (yet) */
 
 #define SHUB_IDLE_OFF_MS	5000
 #define SHUB_FIRST_SAMPLE_MS	500
@@ -206,6 +207,7 @@ struct shub_board {
 	u32 fw_version;			/* 0: any */
 	const struct shub_init_cmd *init;
 	unsigned int n_init;
+	bool no_prox;			/* no proximity sensor on the hub */
 };
 
 static const struct shub_board shub_beyond0 = {
@@ -215,10 +217,12 @@ static const struct shub_board shub_beyond0 = {
 	.n_init = ARRAY_SIZE(shub_init_beyond0),
 };
 
+/* the S20 FE: its touchscreen tells when an ear is on it */
 static const struct shub_board shub_r8s = {
 	.fw_name = "brcm/bcm4775b1-shub-r8s.patch",
 	.init = shub_init_r8s,
 	.n_init = ARRAY_SIZE(shub_init_r8s),
+	.no_prox = true,
 };
 
 struct ssp_msg {
@@ -1852,7 +1856,7 @@ static int shub_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
 	struct shub *h;
-	int ret;
+	int ret, i;
 
 	h = devm_kzalloc(dev, sizeof(*h), GFP_KERNEL);
 	if (!h)
@@ -1867,6 +1871,15 @@ static int shub_probe(struct spi_device *spi)
 	spin_lock_init(&h->q_lock);
 	INIT_DELAYED_WORK(&h->idle_work, shub_idle_work);
 	INIT_WORK(&h->compass_work, shub_compass_work);
+	/*
+	 * A slot matches no sensor's samples until its sensor is added: the
+	 * compass's comes only after the hub's first boot, and a type of 0
+	 * would take the accelerometer's samples and wake its wait queue.
+	 */
+	for (i = 0; i < SHUB_NSENS; i++) {
+		h->sens[i].type = SENSOR_NONE;
+		init_waitqueue_head(&h->sens[i].wait);
+	}
 	tl_crc_init();
 
 	h->txbuf = devm_kzalloc(dev, SSI_BUF_LEN, GFP_KERNEL | GFP_DMA);
@@ -1919,7 +1932,8 @@ static int shub_probe(struct spi_device *spi)
 	if (!ret)
 		ret = shub_add_sensor(h, SHUB_LIGHT, "bcm4775-light", SENSOR_LIGHT, 200,
 				      shub_light_channels, ARRAY_SIZE(shub_light_channels));
-	if (!ret)
+	/* a proximity device that never reads would hide the board's real one */
+	if (!ret && !h->board->no_prox)
 		ret = shub_add_sensor(h, SHUB_PROX, "bcm4775-prox", SENSOR_PROX, 200,
 				      shub_prox_channels, ARRAY_SIZE(shub_prox_channels));
 	if (ret)
