@@ -481,6 +481,20 @@
 			op-sink-microwatt = <15000000>;
 			sink-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)
 				     PDO_FIXED(9000, 1670, 0)>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* USB 2.0: the data role goes to the controller */
+				port@0 {
+					reg = <0>;
+
+					usbc_con_hs: endpoint {
+						remote-endpoint = <&usbdrd_dwc3_hs>;
+					};
+				};
+			};
 		};
 	};
 
@@ -1151,10 +1165,27 @@
 	vcc-supply = <&ufs_vcc_reg>;
 };
 
+/*
+ * Host or device as usbc@25's firmware settles the data role (host behind a
+ * hub or dock that made us the DFP), a device when nothing says otherwise.
+ * The core's ref clock is HSI0's 40 MHz (without the period dwc3 keeps the
+ * 24 MHz reset values in GUCTL REFCLKPER and GFLADJ); the UTMI+ PHY is 8 bits
+ * wide, and phy_type programs PHYIF and USBTRDTIM to match (the reset value
+ * read 8 bits with the 16-bit turnaround, 9).
+ */
 &usbdrd_dwc3 {
-	/* no role switch or extcon yet: a device, always */
-	dr_mode = "peripheral";
+	dr_mode = "otg";
+	usb-role-switch;
+	role-switch-default-mode = "peripheral";
 	maximum-speed = "high-speed";
+	phy_type = "utmi";
+	snps,ref-clock-period-ns = <25>;
+
+	port {
+		usbdrd_dwc3_hs: endpoint {
+			remote-endpoint = <&usbc_con_hs>;
+		};
+	};
 };
 
 &usbdrd_phy {
