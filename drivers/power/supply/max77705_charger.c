@@ -469,6 +469,36 @@ static int max77705_chg_get_property(struct power_supply *psy,
 	return 0;
 }
 
+/*
+ * The limits as asked for, capped while the charger thermistor is hot.
+ * Called with limit_lock held.
+ */
+static int max77705_write_charge_current(struct max77705_charger_data *chg)
+{
+	int ua = chg->charge_ua;
+
+	if (chg->chg_hot)
+		ua = min(ua, MAX77705_CHG_HOT_CHARGE_UA);
+
+	return max77705_set_integer(chg, MAX77705_CHG_CC_LIM,
+				    MAX77705_CURRENT_CHGIN_MIN,
+				    MAX77705_CURRENT_CHGIN_MAX,
+				    MAX77705_CURRENT_CHG_STEP, ua);
+}
+
+static int max77705_write_input_current(struct max77705_charger_data *chg)
+{
+	int ua = chg->input_ua;
+
+	if (chg->chg_hot)
+		ua = min(ua, MAX77705_CHG_HOT_INPUT_UA);
+
+	return max77705_set_integer(chg, MAX77705_CHG_CHGIN_LIM,
+				    MAX77705_CURRENT_CHGIN_MIN,
+				    MAX77705_CURRENT_CHGIN_MAX,
+				    MAX77705_CURRENT_CHGIN_STEP, ua);
+}
+
 static int max77705_set_property(struct power_supply *psy,
 				 enum power_supply_property psp,
 				 const union power_supply_propval *val)
@@ -476,24 +506,20 @@ static int max77705_set_property(struct power_supply *psy,
 	struct max77705_charger_data *chg = power_supply_get_drvdata(psy);
 	int err = 0;
 
+	mutex_lock(&chg->limit_lock);
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
-		err = max77705_set_integer(chg, MAX77705_CHG_CC_LIM,
-					   MAX77705_CURRENT_CHGIN_MIN,
-					   MAX77705_CURRENT_CHGIN_MAX,
-					   MAX77705_CURRENT_CHG_STEP,
-					   val->intval);
+		chg->charge_ua = val->intval;
+		err = max77705_write_charge_current(chg);
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
-		err = max77705_set_integer(chg, MAX77705_CHG_CHGIN_LIM,
-					   MAX77705_CURRENT_CHGIN_MIN,
-					   MAX77705_CURRENT_CHGIN_MAX,
-					   MAX77705_CURRENT_CHGIN_STEP,
-					   val->intval);
+		chg->input_ua = val->intval;
+		err = max77705_write_input_current(chg);
 		break;
 	default:
 		err = -EINVAL;
 	}
+	mutex_unlock(&chg->limit_lock);
 
 	return err;
 };
@@ -574,16 +600,70 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 	power_supply_changed(chg->psy_chg);
 }
 
-/* the battery thermistor (the SoC ADC's NTC zone on these phones), in mC */
-static int max77705_battery_mc(int *mc)
+/* a thermistor's thermal zone (the SoC ADC's NTCs on these phones), in mC */
+static int max77705_zone_mc(const char *zone, int *mc)
 {
 	struct thermal_zone_device *tz;
 
-	tz = thermal_zone_get_zone_by_name(MAX77705_BAT_ZONE);
+	tz = thermal_zone_get_zone_by_name(zone);
 	if (IS_ERR(tz))
 		return PTR_ERR(tz);
 
 	return thermal_zone_get_temp(tz, mc);
+}
+
+static int max77705_battery_mc(int *mc)
+{
+	return max77705_zone_mc(MAX77705_BAT_ZONE, mc);
+}
+
+/*
+ * Stock caps the input at 1 A and the charge current at 1.9 A once the
+ * charger thermistor (charger-thermal, next to the charger) reads 47.0 C,
+ * until it is back at 45.0 C. Stock does it on its fast chargers (9 V and
+ * up); here it is done on every input, as a 5 V port at 3 A heats the
+ * charger as much. What was asked for is kept, and written again once it is
+ * cool. A board without the zone gets no cap.
+ */
+static void max77705_charger_temp(struct max77705_charger_data *chg)
+{
+	int mc, ret = 0;
+	bool hot;
+
+	if (max77705_zone_mc(MAX77705_CHG_ZONE, &mc))
+		return;
+
+	mutex_lock(&chg->limit_lock);
+	hot = chg->chg_hot ? mc > MAX77705_CHG_COOL_MC : mc >= MAX77705_CHG_HOT_MC;
+	if (hot == chg->chg_hot) {
+		mutex_unlock(&chg->limit_lock);
+		return;
+	}
+
+	/* nothing asked for yet: what the charger runs at now */
+	if (!chg->input_ua)
+		max77705_get_input_current(chg, &chg->input_ua);
+	if (!chg->charge_ua)
+		max77705_get_charge_current(chg, &chg->charge_ua);
+
+	chg->chg_hot = hot;
+	ret = max77705_write_input_current(chg);
+	if (!ret)
+		ret = max77705_write_charge_current(chg);
+	mutex_unlock(&chg->limit_lock);
+
+	if (hot)
+		dev_warn(chg->dev, "charger at %d.%d degC: input %d mA, charge %d mA until %d.%d degC\n",
+			 mc / 1000, mc % 1000 / 100,
+			 min(chg->input_ua, MAX77705_CHG_HOT_INPUT_UA) / 1000,
+			 min(chg->charge_ua, MAX77705_CHG_HOT_CHARGE_UA) / 1000,
+			 MAX77705_CHG_COOL_MC / 1000, MAX77705_CHG_COOL_MC % 1000 / 100);
+	else
+		dev_info(chg->dev, "charger back at %d.%d degC: input %d mA, charge %d mA\n",
+			 mc / 1000, mc % 1000 / 100, chg->input_ua / 1000, chg->charge_ua / 1000);
+	if (ret)
+		dev_err(chg->dev, "unable to set the current limits: %d\n", ret);
+	power_supply_changed(chg->psy_chg);
 }
 
 /*
@@ -630,6 +710,8 @@ static void max77705_temp_work(struct work_struct *work)
 			 mc / 1000, mc % 1000 / 100);
 		power_supply_changed(chg->psy_chg);
 	}
+
+	max77705_charger_temp(chg);
 
 	queue_delayed_work(chg->wqueue, &chg->temp_work,
 			   msecs_to_jiffies(MAX77705_BAT_POLL_MS));
@@ -886,6 +968,10 @@ static int max77705_charger_probe(struct i2c_client *i2c)
 
 	chg->dev = dev;
 	i2c_set_clientdata(i2c, chg);
+
+	ret = devm_mutex_init(dev, &chg->limit_lock);
+	if (ret)
+		return ret;
 
 	chip_desc = devm_kmemdup(dev, &max77705_charger_irq_chip,
 				 sizeof(max77705_charger_irq_chip),
