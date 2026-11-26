@@ -70,15 +70,29 @@ static void max77705_aicl_irq_on(struct max77705_charger_data *chg)
 }
 
 /*
+ * The ceiling for the input limit, in CHGIN_LIM codes: the one asked for, and
+ * no more than stock's 1 A while the charger thermistor is hot. AICL works
+ * under it. Called with aicl_lock held.
+ */
+static unsigned int max77705_ilim_top(struct max77705_charger_data *chg)
+{
+	lockdep_assert_held(&chg->aicl_lock);
+	if (chg->chg_hot)
+		return min(chg->ilim_req, MAX77705_CHG_HOT_ILIM);
+	return chg->ilim_req;
+}
+
+/*
  * AICL. AICL_OK low means the charger draws less than its input limit to hold
  * VBUS at VCHGIN_REG: the source sags at that current. As the stock kernel
  * does, step the limit down until it fits, MAX77705_AICL_STEP every 100 ms
  * and to no less than MAX77705_AICL_FLOOR. Stock then keeps it until the
  * cable changes. Here, MAX77705_AICL_RERUN_MS after it fits, it goes back up
  * a step every MAX77705_AICL_CLIMB_MS while AICL stays quiet, up to the limit
- * asked for: a source that sagged for a while (a hub whose other ports were
- * busy) is used in full again, and one that cannot do more costs a step up
- * and back down every MAX77705_AICL_RERUN_MS.
+ * asked for (no more than 1 A while the charger thermistor is hot, see
+ * max77705_charger_temp()): a source that sagged for a while (a hub whose
+ * other ports were busy) is used in full again, and one that cannot do more
+ * costs a step up and back down every MAX77705_AICL_RERUN_MS.
  *
  * All of it runs in this one work item, not in the interrupt handler: that
  * runs in the one thread all MAX77705 interrupts share.
@@ -88,7 +102,7 @@ static void max77705_aicl_work(struct work_struct *work)
 	struct max77705_charger_data *chg =
 		container_of(to_delayed_work(work), struct max77705_charger_data, aicl_work);
 	unsigned long now = jiffies, delay = 0;
-	unsigned int int_ok, lim;
+	unsigned int int_ok, lim, top;
 	bool changed = false;
 
 	mutex_lock(&chg->aicl_lock);
@@ -96,10 +110,11 @@ static void max77705_aicl_work(struct work_struct *work)
 	    regmap_read(chg->regmap, MAX77705_CHG_REG_INT_OK, &int_ok) ||
 	    regmap_field_read(chg->rfield[MAX77705_CHG_CHGIN_LIM], &lim))
 		goto out;
+	top = max77705_ilim_top(chg);
 
 	/* no input to fit: look again when it is back (CHGIN_I), or in a while */
 	if (!(int_ok & MAX77705_CHGIN_OK)) {
-		if (lim < chg->ilim_req)
+		if (lim < top)
 			delay = msecs_to_jiffies(MAX77705_AICL_RERUN_MS);
 		goto out;
 	}
@@ -117,9 +132,9 @@ static void max77705_aicl_work(struct work_struct *work)
 			disable_irq_nosync(chg->aicl_irq);
 			chg->aicl_irq_off = true;
 		}
-	} else if (!chg->aicl_stepping && lim < chg->ilim_req &&
+	} else if (!chg->aicl_stepping && lim < top &&
 		   time_after_eq(now, chg->rerun_at)) {
-		lim = min(lim + MAX77705_AICL_STEP, chg->ilim_req);
+		lim = min(lim + MAX77705_AICL_STEP, top);
 		regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], lim);
 		max77705_aicl_irq_on(chg);
 		chg->aicl_climbing = true;
@@ -148,7 +163,7 @@ static void max77705_aicl_work(struct work_struct *work)
 		changed = true;
 	}
 
-	if (lim < chg->ilim_req || chg->aicl_climbing)
+	if (lim < top || chg->aicl_climbing)
 		delay = time_after(chg->rerun_at, now) ? chg->rerun_at - now : 1;
 out:
 	if (delay)
@@ -563,23 +578,18 @@ static int max77705_chg_get_property(struct power_supply *psy,
 }
 
 /*
- * A new input limit: AICL starts over from it. The same one again (USB-C
- * writes it along with each new charge current) leaves AICL where it is.
+ * The input limit at its ceiling, and AICL started over from there. Called
+ * with aicl_lock held.
  */
-static int max77705_set_input_current(struct max77705_charger_data *chg, int ua)
+static int max77705_ilim_restart(struct max77705_charger_data *chg)
 {
-	/* code n is (n + 1) x 25 mA, as max77705_get_input_current() reads it */
-	unsigned int lim = clamp_val(ua, MAX77705_CURRENT_CHGIN_MIN,
-				     MAX77705_CURRENT_CHGIN_MAX) / MAX77705_CURRENT_CHGIN_STEP - 1;
-	int err = 0;
+	unsigned int lim = max77705_ilim_top(chg);
+	int err;
 
-	mutex_lock(&chg->aicl_lock);
-	if (lim == chg->ilim_req)
-		goto out;
+	lockdep_assert_held(&chg->aicl_lock);
 	err = regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], lim);
 	if (err)
-		goto out;
-	chg->ilim_req = lim;
+		return err;
 	chg->ilim_shown = lim;
 	chg->aicl_stepping = false;
 	chg->aicl_climbing = false;
@@ -590,10 +600,51 @@ static int max77705_set_input_current(struct max77705_charger_data *chg, int ua)
 		mod_delayed_work(chg->wqueue, &chg->aicl_work,
 				 msecs_to_jiffies(AICL_WORK_DELAY_MS));
 	}
+	return 0;
+}
+
+/*
+ * A new input limit: AICL starts over from it. The same one again (USB-C
+ * writes it along with each new charge current) leaves AICL where it is.
+ */
+static int max77705_set_input_current(struct max77705_charger_data *chg, int ua)
+{
+	/* code n is (n + 1) x 25 mA, as max77705_get_input_current() reads it */
+	unsigned int lim = clamp_val(ua, MAX77705_CURRENT_CHGIN_MIN,
+				     MAX77705_CURRENT_CHGIN_MAX) / MAX77705_CURRENT_CHGIN_STEP - 1;
+	unsigned int old;
+	int err = 0;
+
+	mutex_lock(&chg->aicl_lock);
+	if (lim == chg->ilim_req)
+		goto out;
+	old = chg->ilim_req;
+	chg->ilim_req = lim;
+	err = max77705_ilim_restart(chg);
+	if (err)
+		chg->ilim_req = old;
 out:
 	mutex_unlock(&chg->aicl_lock);
 
 	return err;
+}
+
+/*
+ * The charge current as asked for, capped at stock's 1.9 A while the charger
+ * thermistor is hot. Called with aicl_lock held.
+ */
+static int max77705_write_charge_current(struct max77705_charger_data *chg)
+{
+	int ua = chg->charge_ua;
+
+	lockdep_assert_held(&chg->aicl_lock);
+	if (chg->chg_hot)
+		ua = min(ua, MAX77705_CHG_HOT_CHARGE_UA);
+
+	return max77705_set_integer(chg, MAX77705_CHG_CC_LIM,
+				    MAX77705_CURRENT_CHGIN_MIN,
+				    MAX77705_CURRENT_CHGIN_MAX,
+				    MAX77705_CURRENT_CHG_STEP, ua);
 }
 
 static int max77705_set_property(struct power_supply *psy,
@@ -605,11 +656,10 @@ static int max77705_set_property(struct power_supply *psy,
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_CURRENT:
-		err = max77705_set_integer(chg, MAX77705_CHG_CC_LIM,
-					   MAX77705_CURRENT_CHGIN_MIN,
-					   MAX77705_CURRENT_CHGIN_MAX,
-					   MAX77705_CURRENT_CHG_STEP,
-					   val->intval);
+		mutex_lock(&chg->aicl_lock);
+		chg->charge_ua = val->intval;
+		err = max77705_write_charge_current(chg);
+		mutex_unlock(&chg->aicl_lock);
 		break;
 	case POWER_SUPPLY_PROP_INPUT_CURRENT_LIMIT:
 		err = max77705_set_input_current(chg, val->intval);
@@ -729,16 +779,80 @@ static void max77705_chgin_isr_work(struct work_struct *work)
 	power_supply_changed(chg->psy_chg);
 }
 
-/* the battery thermistor (the SoC ADC's NTC zone on these phones), in mC */
-static int max77705_battery_mc(int *mc)
+/* a thermistor's thermal zone (the SoC ADC's NTCs on these phones), in mC */
+static int max77705_zone_mc(const char *zone, int *mc)
 {
 	struct thermal_zone_device *tz;
 
-	tz = thermal_zone_get_zone_by_name(MAX77705_BAT_ZONE);
+	tz = thermal_zone_get_zone_by_name(zone);
 	if (IS_ERR(tz))
 		return PTR_ERR(tz);
 
 	return thermal_zone_get_temp(tz, mc);
+}
+
+static int max77705_battery_mc(int *mc)
+{
+	return max77705_zone_mc(MAX77705_BAT_ZONE, mc);
+}
+
+/*
+ * Stock caps the input at 1 A and the charge current at 1.9 A once the
+ * charger thermistor (charger-thermal, next to the charger) reads 47.0 C,
+ * until it is back at 45.0 C. Stock does it on its fast chargers (9 V and
+ * up); here it is done on every input, as a 5 V port at 3 A brings in as
+ * much power. The input cap is AICL's ceiling: a limit AICL found below it
+ * stays, and once it is cool AICL starts over from the limit asked for. A
+ * board without the zone gets no cap.
+ */
+static void max77705_charger_temp(struct max77705_charger_data *chg)
+{
+	unsigned int lim;
+	int mc, ilim_ma, cc_ua, ret;
+	bool hot;
+
+	if (max77705_zone_mc(MAX77705_CHG_ZONE, &mc))
+		return;
+
+	mutex_lock(&chg->aicl_lock);
+	hot = chg->chg_hot ? mc > MAX77705_CHG_COOL_MC : mc >= MAX77705_CHG_HOT_MC;
+	if (hot == chg->chg_hot) {
+		mutex_unlock(&chg->aicl_lock);
+		return;
+	}
+
+	/* nothing asked for yet: what the charger runs at now */
+	if (!chg->charge_ua)
+		max77705_get_charge_current(chg, &chg->charge_ua);
+
+	chg->chg_hot = hot;
+	if (hot) {
+		ret = regmap_field_read(chg->rfield[MAX77705_CHG_CHGIN_LIM], &lim);
+		if (!ret && lim > max77705_ilim_top(chg)) {
+			lim = max77705_ilim_top(chg);
+			ret = regmap_field_write(chg->rfield[MAX77705_CHG_CHGIN_LIM], lim);
+			if (!ret)
+				chg->ilim_shown = lim;
+		}
+	} else {
+		ret = max77705_ilim_restart(chg);
+	}
+	if (!ret)
+		ret = max77705_write_charge_current(chg);
+	ilim_ma = max77705_chgin_lim_ma(max77705_ilim_top(chg));
+	cc_ua = hot ? min(chg->charge_ua, MAX77705_CHG_HOT_CHARGE_UA) : chg->charge_ua;
+	mutex_unlock(&chg->aicl_lock);
+
+	if (hot)
+		dev_warn(chg->dev, "charger at %d.%d degC: input up to %d mA, charge %d mA until %d.%d degC\n",
+			 mc / 1000, mc % 1000 / 100, ilim_ma, cc_ua / 1000,
+			 MAX77705_CHG_COOL_MC / 1000, MAX77705_CHG_COOL_MC % 1000 / 100);
+	else
+		dev_info(chg->dev, "charger back at %d.%d degC: input %d mA, charge %d mA\n",
+			 mc / 1000, mc % 1000 / 100, ilim_ma, cc_ua / 1000);
+	if (ret)
+		dev_err(chg->dev, "unable to set the current limits: %d\n", ret);
+	power_supply_changed(chg->psy_chg);
 }
 
 /*
@@ -785,6 +899,8 @@ static void max77705_temp_work(struct work_struct *work)
 			 mc / 1000, mc % 1000 / 100);
 		power_supply_changed(chg->psy_chg);
 	}
+
+	max77705_charger_temp(chg);
 
 	queue_delayed_work(chg->wqueue, &chg->temp_work,
 			   msecs_to_jiffies(MAX77705_BAT_POLL_MS));

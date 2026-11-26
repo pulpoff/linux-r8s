@@ -639,12 +639,122 @@
 			(80000) 402 (85000) 370 (90000) 268>;
 	};
 
-	/* read by max77705-usbc for its charge current limits */
+	/*
+	 * Board thermistors with stock's tables: by the AP, by the Wi-Fi and
+	 * by the modem. Read only, as zones without trips.
+	 */
+	ap_ntc: thermal-sensor-ap {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 0>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3670 (-15000) 3555 (-10000) 3433 (-5000) 3279
+			(0) 3087 (5000) 2888 (10000) 2656 (15000) 2416
+			(20000) 2179 (25000) 1955 (30000) 1725 (35000) 1504
+			(40000) 1300 (45000) 1099 (50000) 949 (55000) 806
+			(60000) 682 (65000) 575 (70000) 481 (75000) 403
+			(80000) 337 (85000) 280 (90000) 217>;
+	};
+
+	wifi_ntc: thermal-sensor-wifi {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 2>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3629 (-15000) 3544 (-10000) 3403 (-5000) 3256
+			(0) 3083 (5000) 2893 (10000) 2666 (15000) 2446
+			(20000) 2211 (25000) 1978 (30000) 1753 (35000) 1535
+			(40000) 1333 (45000) 1146 (50000) 982 (55000) 839
+			(60000) 714 (65000) 604 (70000) 510 (75000) 429
+			(80000) 359 (85000) 302 (90000) 239>;
+	};
+
+	cp_ntc: thermal-sensor-cp {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		io-channels = <&adc 5>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <
+			(-20000) 3694 (-15000) 3587 (-10000) 3451 (-5000) 3298
+			(0) 3113 (5000) 2907 (10000) 2675 (15000) 2447
+			(20000) 2208 (25000) 1971 (30000) 1741 (35000) 1521
+			(40000) 1316 (45000) 1122 (50000) 961 (55000) 819
+			(60000) 694 (65000) 587 (70000) 494 (75000) 414
+			(80000) 347 (85000) 291 (90000) 228>;
+	};
+
+	/*
+	 * battery-thermal is read by max77705-usbc and max77705-charger for
+	 * their charge limits. It also slows the SoC down on a hot battery,
+	 * which nothing else does while no input is connected: from 42 C the
+	 * big and middle cores and the GPU in rungs, at 48 C all of them down
+	 * to their lowest levels. 55 C is "hot" (a thermal event for
+	 * userspace), 60 C shuts down.
+	 */
 	thermal-zones {
 		battery-thermal {
-			polling-delay-passive = <0>;
-			polling-delay = <0>;
+			polling-delay-passive = <2000>;
+			polling-delay = <5000>;
 			thermal-sensors = <&battery_ntc>;
+
+			trips {
+				battery_42: battery-42 {
+					temperature = <42000>;
+					hysteresis = <1000>;
+					type = "passive";
+				};
+
+				battery_45: battery-45 {
+					temperature = <45000>;
+					hysteresis = <1000>;
+					type = "passive";
+				};
+
+				battery_48: battery-48 {
+					temperature = <48000>;
+					hysteresis = <1000>;
+					type = "passive";
+				};
+
+				battery-hot {
+					temperature = <55000>;
+					hysteresis = <1000>;
+					type = "hot";
+				};
+
+				battery-critical {
+					temperature = <60000>;
+					hysteresis = <0>;
+					type = "critical";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&battery_42>;
+					cooling-device = <&cpu6 4 8>, <&cpu7 4 8>,
+							 <&cpu4 2 6>, <&cpu5 2 6>,
+							 <&gpu 1 2>;
+				};
+
+				map1 {
+					trip = <&battery_45>;
+					cooling-device = <&cpu6 8 14>, <&cpu7 8 14>,
+							 <&cpu4 6 11>, <&cpu5 6 11>,
+							 <&gpu 2 4>;
+				};
+
+				map2 {
+					trip = <&battery_48>;
+					cooling-device = <&cpu6 14 21>, <&cpu7 14 21>,
+							 <&cpu4 11 18>, <&cpu5 11 18>,
+							 <&cpu0 0 13>, <&cpu1 0 13>,
+							 <&cpu2 0 13>, <&cpu3 0 13>,
+							 <&gpu 4 7>;
+				};
+			};
 		};
 
 		charger-thermal {
@@ -657,6 +767,24 @@
 			polling-delay-passive = <0>;
 			polling-delay = <0>;
 			thermal-sensors = <&usb_ntc>;
+		};
+
+		ap-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+			thermal-sensors = <&ap_ntc>;
+		};
+
+		wifi-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+			thermal-sensors = <&wifi_ntc>;
+		};
+
+		cp-thermal {
+			polling-delay-passive = <0>;
+			polling-delay = <0>;
+			thermal-sensors = <&cp_ntc>;
 		};
 	};
 };
