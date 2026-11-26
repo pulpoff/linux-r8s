@@ -1405,9 +1405,11 @@ config TOUCHSCREEN_ZINITIX
 config TOUCHSCREEN_ZINITIX_ZT7650
 	tristate "Zinitix ZT7650 touchscreen support"
 	depends on I2C
+	depends on IIO
 	help
 	  Say Y here if you have a touchscreen using the Zinitix ZT7650,
-	  as the Samsung Galaxy S20 FE has.
+	  as the Samsung Galaxy S20 FE has. Its ear detection is an IIO
+	  proximity sensor.
 
 	  If unsure, say N.
 
