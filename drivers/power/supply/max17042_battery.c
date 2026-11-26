@@ -22,6 +22,7 @@
 #include <linux/power/max17042_battery.h>
 #include <linux/of.h>
 #include <linux/regmap.h>
+#include <linux/thermal.h>
 
 /* Status register bits */
 #define STATUS_POR_BIT         (1 << 1)
@@ -79,7 +80,12 @@ struct max17042_chip {
 	int    vmax;	/* in millivolts */
 	int    temp_min;	/* in tenths of degree Celsius */
 	int    temp_max;	/* in tenths of degree Celsius */
+	const char *temp_zone;	/* the battery thermistor's thermal zone, if any */
+	bool   avg_status;	/* supplied: charging or not by the average current */
 };
+
+/* above this average current a supplied battery is charging */
+#define MAX17042_CHARGING_MIN_UA	20000
 
 static enum power_supply_property max17042_battery_props[] = {
 	POWER_SUPPLY_PROP_STATUS,
@@ -118,6 +124,22 @@ static int max17042_get_temperature(struct max17042_chip *chip, int *temp)
 	u32 data;
 	struct regmap *map = chip->regmap;
 
+	/*
+	 * A gauge whose own reading is not the battery's (on the MAX77705 boards
+	 * the boot chain writes TEMP once and nothing updates it): the battery
+	 * thermistor's zone, while it is there.
+	 */
+	if (chip->temp_zone) {
+		struct thermal_zone_device *tz;
+		int mc;
+
+		tz = thermal_zone_get_zone_by_name(chip->temp_zone);
+		if (!IS_ERR(tz) && !thermal_zone_get_temp(tz, &mc)) {
+			*temp = mc / 100;
+			return 0;
+		}
+	}
+
 	ret = regmap_read(map, MAX17042_TEMP, &data);
 	if (ret < 0)
 		return ret;
@@ -125,6 +147,28 @@ static int max17042_get_temperature(struct max17042_chip *chip, int *temp)
 	*temp = sign_extend32(data, 15);
 	/* The value is converted into deci-centigrade scale */
 	*temp = *temp * 10 * MAX17042_TEMPERATURE_LSB;
+	return 0;
+}
+
+/*
+ * A supplied battery by the gauge's average current: "charging" above a
+ * small margin, else "not charging" (plugged in, and the input does not keep
+ * up). The instantaneous current swings with the load and with the charger's
+ * input limit stepping, so on a weak port it flipped between the two.
+ */
+static int max17042_get_avg_status(struct max17042_chip *chip, int *status)
+{
+	u32 data;
+	int ret;
+	s64 ua;
+
+	ret = regmap_read(chip->regmap, MAX17042_AvgCurrent, &data);
+	if (ret < 0)
+		return ret;
+
+	ua = div_s64(sign_extend64(data, 15) * MAX17042_CURRENT_LSB, chip->r_sns);
+	*status = ua > MAX17042_CHARGING_MIN_UA ? POWER_SUPPLY_STATUS_CHARGING :
+						  POWER_SUPPLY_STATUS_NOT_CHARGING;
 	return 0;
 }
 
@@ -154,6 +198,9 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 		    (sup.intval == POWER_SUPPLY_STATUS_CHARGING ||
 		     sup.intval == POWER_SUPPLY_STATUS_FULL ||
 		     sup.intval == POWER_SUPPLY_STATUS_NOT_CHARGING)) {
+			if (sup.intval == POWER_SUPPLY_STATUS_CHARGING &&
+			    chip->avg_status && chip->enable_current_sense)
+				return max17042_get_avg_status(chip, status);
 			*status = sup.intval;
 			return 0;
 		}
@@ -206,6 +253,9 @@ static int max17042_get_status(struct max17042_chip *chip, int *status)
 		*status = POWER_SUPPLY_STATUS_CHARGING;
 		return 0;
 	}
+
+	if (chip->avg_status)
+		return max17042_get_avg_status(chip, status);
 
 	ret = regmap_read(chip->regmap, MAX17042_Current, &data);
 	if (ret < 0)
@@ -1179,6 +1229,12 @@ static int max17042_probe(struct i2c_client *client, struct device *dev, int irq
 
 	chip->dev = dev;
 	chip->chip_type = chip_type;
+
+	/* the MAX77705's gauge: see max17042_get_temperature(), _get_avg_status() */
+	if (of_device_is_compatible(dev->of_node, "maxim,max77705-battery")) {
+		chip->temp_zone = "battery-thermal";
+		chip->avg_status = true;
+	}
 
 	if (chip->chip_type == MAXIM_DEVICE_TYPE_MAX77759)
 		regmap_config = &max77759_fg_regmap_cfg;
