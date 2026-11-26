@@ -7,10 +7,18 @@
  * contact as a 16-byte event packet instead of a status word and a point
  * table. Its firmware lives in the chip and comes up with the panel's
  * resolution set, so nothing but the mode needs to be written.
+ *
+ * The phone has no proximity sensor: the touchscreen tells when an ear is on
+ * it, in its ear detection mode. That is an IIO proximity channel here, and
+ * the mode is on while the channel is read (iio-sensor-proxy reads it every
+ * 0.7 s while an application holds the proximity sensor, as a dialer does in
+ * a call) and goes off once nothing has read it for ZT_PROX_IDLE_MS.
  */
 
 #include <linux/delay.h>
+#include <linux/devm-helpers.h>
 #include <linux/i2c.h>
+#include <linux/iio/iio.h>
 #include <linux/input.h>
 #include <linux/input/mt.h>
 #include <linux/input/touchscreen.h>
@@ -18,18 +26,22 @@
 #include <linux/kernel.h>
 #include <linux/mod_devicetable.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/regulator/consumer.h>
+#include <linux/workqueue.h>
 
 #define ZT_SWRESET_CMD			0x0000
 #define ZT_CLEAR_INT_STATUS_CMD		0x0003
 #define ZT_TOUCH_MODE			0x0010
 #define ZT_CHIP_REVISION		0x0011
+#define ZT_PROXIMITY_DETECT		0x0024	/* the ear detection's level */
 #define ZT_FIRMWARE_VERSION		0x0012
 #define ZT_DATA_VERSION			0x0013
 #define ZT_SUPPORTED_FINGER_NUM		0x0015
 #define ZT_X_RESOLUTION			0x00c0
 #define ZT_Y_RESOLUTION			0x00c1
 #define ZT_OPTIONAL_SETTING		0x0116
+#define  ZT_OPTIONAL_EAR_DETECT		BIT(6)
 #define ZT_MINOR_FW_VERSION		0x0121
 #define ZT_CHECKSUM_RESULT		0x012c
 #define ZT_POINT_STATUS_REG		0x0200	/* the first event packet */
@@ -67,6 +79,15 @@ enum zt_touch_status {
 };
 
 #define ZT_TYPE_PALM			5
+#define ZT_TYPE_PROXIMITY		7	/* an ear detection event */
+
+/*
+ * in_proximity_raw: ZT_PROX_NEAR with an ear on the screen, 0 without;
+ * in_proximity_nearlevel puts the line between them.
+ */
+#define ZT_PROX_NEAR			10
+#define ZT_PROX_NEAR_LEVEL		5
+#define ZT_PROX_IDLE_MS			3000
 
 struct zt_event {
 	u8 id;		/* event id (1:0), touch id (5:2), touch status (7:6) */
@@ -93,6 +114,12 @@ struct zt7650 {
 	struct touchscreen_properties prop;
 	struct regulator *vdd;
 	struct zt_event ev[ZT_MAX_FINGERS];
+
+	struct mutex lock;		/* the chip's registers, and the fields below */
+	bool running;			/* powered and set up */
+	u16 optional;			/* ZT_OPTIONAL_SETTING as written */
+	u16 prox_level;			/* the last ear detection level */
+	struct delayed_work prox_idle;
 };
 
 /* The address and the data must be separate transfers, with a gap between them. */
@@ -245,7 +272,7 @@ static int zt7650_init(struct zt7650 *zt)
 	if (error)
 		return error;
 
-	error = zt_write_u16(zt, ZT_OPTIONAL_SETTING, 0);
+	error = zt_write_u16(zt, ZT_OPTIONAL_SETTING, zt->optional);
 	if (error)
 		return error;
 
@@ -280,13 +307,38 @@ static void zt7650_report(struct zt7650 *zt, const struct zt_event *ev)
 	}
 }
 
+/*
+ * The levels as the chip reports them: 1 to 4 near, 0 and 5 far, as stock's
+ * driver takes them (still to be checked on the phone).
+ */
+static bool zt7650_prox_near(u16 level)
+{
+	return level && level != 5;
+}
+
+/* an ear detection event: what it says now. Called with the lock held. */
+static void zt7650_prox_event(struct zt7650 *zt)
+{
+	u16 level;
+
+	if (!(zt->optional & ZT_OPTIONAL_EAR_DETECT) ||
+	    zt_read_u16(zt, ZT_PROXIMITY_DETECT, &level))
+		return;
+	if (level != zt->prox_level)
+		dev_dbg(&zt->client->dev, "ear detection level %u (%s)\n",
+			level, zt7650_prox_near(level) ? "near" : "far");
+	zt->prox_level = level;
+}
+
 static irqreturn_t zt7650_irq(int irq, void *data)
 {
 	struct zt7650 *zt = data;
 	struct device *dev = &zt->client->dev;
 	unsigned int n, i;
+	bool prox = false;
 	int error;
 
+	mutex_lock(&zt->lock);
 	error = zt_read(zt, ZT_POINT_STATUS_REG, &zt->ev[0], sizeof(zt->ev[0]));
 	if (error) {
 		dev_err_ratelimited(dev, "failed to read an event: %d\n", error);
@@ -311,14 +363,20 @@ static irqreturn_t zt7650_irq(int irq, void *data)
 		}
 	}
 
-	for (i = 0; i < n; i++)
+	for (i = 0; i < n; i++) {
+		if (ZT_TYPE(&zt->ev[i]) == ZT_TYPE_PROXIMITY)
+			prox = true;
 		zt7650_report(zt, &zt->ev[i]);
+	}
+	if (prox)
+		zt7650_prox_event(zt);
 
 	input_mt_sync_frame(zt->input);
 	input_sync(zt->input);
 
 out:
 	zt_write_cmd(zt, ZT_CLEAR_INT_STATUS_CMD);
+	mutex_unlock(&zt->lock);
 	return IRQ_HANDLED;
 }
 
@@ -330,12 +388,16 @@ static int zt7650_start(struct zt7650 *zt)
 	if (error)
 		return error;
 
+	mutex_lock(&zt->lock);
 	error = zt7650_init(zt);
 	if (error) {
+		mutex_unlock(&zt->lock);
 		dev_err(&zt->client->dev, "failed to set the chip up: %d\n", error);
 		regulator_disable(zt->vdd);
 		return error;
 	}
+	zt->running = true;
+	mutex_unlock(&zt->lock);
 
 	enable_irq(zt->client->irq);
 	return 0;
@@ -344,7 +406,106 @@ static int zt7650_start(struct zt7650 *zt)
 static void zt7650_stop(struct zt7650 *zt)
 {
 	disable_irq(zt->client->irq);
+	cancel_delayed_work_sync(&zt->prox_idle);
+
+	/* ear detection starts over with the next read */
+	mutex_lock(&zt->lock);
+	zt->running = false;
+	zt->optional &= ~ZT_OPTIONAL_EAR_DETECT;
+	zt->prox_level = 0;
+	mutex_unlock(&zt->lock);
+
 	regulator_disable(zt->vdd);
+}
+
+static void zt7650_prox_idle(struct work_struct *work)
+{
+	struct zt7650 *zt = container_of(to_delayed_work(work), struct zt7650, prox_idle);
+
+	guard(mutex)(&zt->lock);
+	if (!zt->running || !(zt->optional & ZT_OPTIONAL_EAR_DETECT))
+		return;
+	if (zt_write_u16(zt, ZT_OPTIONAL_SETTING, zt->optional & ~ZT_OPTIONAL_EAR_DETECT))
+		return;
+	zt->optional &= ~ZT_OPTIONAL_EAR_DETECT;
+	zt->prox_level = 0;
+	dev_dbg(&zt->client->dev, "ear detection off\n");
+}
+
+static int zt7650_prox_read_raw(struct iio_dev *indio_dev, struct iio_chan_spec const *chan,
+				int *val, int *val2, long mask)
+{
+	struct zt7650 *zt = *(struct zt7650 **)iio_priv(indio_dev);
+	int error;
+
+	if (mask != IIO_CHAN_INFO_RAW)
+		return -EINVAL;
+
+	guard(mutex)(&zt->lock);
+	/* a touchscreen that is off sees no ear */
+	if (!zt->running) {
+		*val = 0;
+		return IIO_VAL_INT;
+	}
+	if (!(zt->optional & ZT_OPTIONAL_EAR_DETECT)) {
+		error = zt_write_u16(zt, ZT_OPTIONAL_SETTING,
+				     zt->optional | ZT_OPTIONAL_EAR_DETECT);
+		if (error)
+			return error;
+		zt->optional |= ZT_OPTIONAL_EAR_DETECT;
+		zt->prox_level = 0;
+		dev_dbg(&zt->client->dev, "ear detection on\n");
+	}
+	mod_delayed_work(system_wq, &zt->prox_idle, msecs_to_jiffies(ZT_PROX_IDLE_MS));
+
+	*val = zt7650_prox_near(zt->prox_level) ? ZT_PROX_NEAR : 0;
+	return IIO_VAL_INT;
+}
+
+static ssize_t zt7650_prox_nearlevel(struct iio_dev *indio_dev, uintptr_t priv,
+				     const struct iio_chan_spec *chan, char *buf)
+{
+	return sysfs_emit(buf, "%d\n", ZT_PROX_NEAR_LEVEL);
+}
+
+static const struct iio_chan_spec_ext_info zt7650_prox_ext_info[] = {
+	{
+		.name = "nearlevel",
+		.shared = IIO_SEPARATE,
+		.read = zt7650_prox_nearlevel,
+	},
+	{ }
+};
+
+static const struct iio_chan_spec zt7650_prox_channels[] = {
+	{
+		.type = IIO_PROXIMITY,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
+		.ext_info = zt7650_prox_ext_info,
+	},
+};
+
+static const struct iio_info zt7650_prox_info = {
+	.read_raw = zt7650_prox_read_raw,
+};
+
+static int zt7650_prox_register(struct zt7650 *zt)
+{
+	struct device *dev = &zt->client->dev;
+	struct iio_dev *indio_dev;
+
+	indio_dev = devm_iio_device_alloc(dev, sizeof(zt));
+	if (!indio_dev)
+		return -ENOMEM;
+
+	*(struct zt7650 **)iio_priv(indio_dev) = zt;
+	indio_dev->name = "zt7650-proximity";
+	indio_dev->info = &zt7650_prox_info;
+	indio_dev->modes = INDIO_DIRECT_MODE;
+	indio_dev->channels = zt7650_prox_channels;
+	indio_dev->num_channels = ARRAY_SIZE(zt7650_prox_channels);
+
+	return devm_iio_device_register(dev, indio_dev);
 }
 
 static int zt7650_open(struct input_dev *input)
@@ -374,6 +535,15 @@ static int zt7650_probe(struct i2c_client *client)
 
 	zt->client = client;
 	i2c_set_clientdata(client, zt);
+
+	error = devm_mutex_init(dev, &zt->lock);
+	if (error)
+		return error;
+
+	/* before the input device: closing it cancels this */
+	error = devm_delayed_work_autocancel(dev, &zt->prox_idle, zt7650_prox_idle);
+	if (error)
+		return error;
 
 	zt->vdd = devm_regulator_get(dev, "vdd");
 	if (IS_ERR(zt->vdd))
@@ -433,6 +603,10 @@ static int zt7650_probe(struct i2c_client *client)
 	error = input_register_device(input);
 	if (error)
 		return dev_err_probe(dev, error, "failed to register the input device\n");
+
+	error = zt7650_prox_register(zt);
+	if (error)
+		return dev_err_probe(dev, error, "failed to register the ear detection\n");
 
 	return 0;
 }
