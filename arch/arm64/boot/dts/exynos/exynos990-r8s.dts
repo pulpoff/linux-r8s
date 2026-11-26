@@ -809,6 +809,14 @@
 		samsung,speaker-amps = <&rcv_amp>, <&spk_amp>;
 		samsung,mic-codec = <&vts_slif>;
 	};
+
+	/* sound over the USB-C DisplayPort: DP0's audio FIFO on PDMA0 request 28 (stock dp_dma@0) */
+	dp-audio {
+		compatible = "samsung,exynos990-dp-audio";
+		samsung,dp = <&displayport>;
+		dmas = <&pdma0 28>;
+		dma-names = "tx";
+	};
 };
 
 /* the PDM mics: line 0 (gpv0-0 clock, gpv0-3 data) and line 1 (gpv0-1, gpv0-4) */

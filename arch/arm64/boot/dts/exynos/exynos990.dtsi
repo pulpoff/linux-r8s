@@ -1243,6 +1243,23 @@
 			status = "disabled";
 		};
 
+		/*
+		 * PDMA0, a PL330 in BLK_BUS1 (stock exynos9830 pdma0): its gates run
+		 * under hardware control from boot, and mainline has no CMU_BUS1, so
+		 * the oscillator stands in for apb_pclk. No FLUSHP: stock's PL330
+		 * flushes the peripheral after each burst, mainline before each
+		 * period's first wait.
+		 */
+		pdma0: dma-controller@1a510000 {
+			compatible = "arm,pl330", "arm,primecell";
+			reg = <0x1a510000 0x1000>;
+			interrupts = <GIC_SPI 66 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&oscclk>;
+			clock-names = "apb_pclk";
+			#dma-cells = <1>;
+			arm,pl330-broken-no-flushp;
+		};
+
 		cmu_top: clock-controller@1a330000 {
 			compatible = "samsung,exynos990-cmu-top";
 			reg = <0x1a330000 0x8000>;
