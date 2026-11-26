@@ -929,6 +929,29 @@
 			status = "disabled";
 		};
 
+		/*
+		 * The DisplayPort link, the USB/DP combo PHY's PMA and PCS, and
+		 * USBCON (shared with usbdrd_phy); the interrupt is DECON1's,
+		 * which scans out to it.
+		 */
+		displayport: displayport@10ab0000 {
+			compatible = "samsung,exynos990-dp";
+			reg = <0x10ab0000 0x10000>,
+			      <0x10ae0000 0x2800>,
+			      <0x10af0000 0x800>,
+			      <0x10c00000 0x100>;
+			reg-names = "link", "pma", "pcs", "usbcon";
+			interrupts = <GIC_SPI 257 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&cmu_hsi0 CLK_GOUT_HSI0_DP_LINK_PCLK>,
+				 <&cmu_hsi0 CLK_GOUT_HSI0_DP_LINK_DP_GTC_CLK>,
+				 <&cmu_hsi0 CLK_GOUT_HSI0_USB31DRD_ACLK_PHYCTRL>,
+				 <&cmu_hsi0 CLK_GOUT_HSI0_USB31DRD_USBDPPHY_REF_SOC_PLL>,
+				 <&cmu_hsi0 CLK_GOUT_HSI0_USB31DRD_USBDPPHY_SCL_APB>,
+				 <&cmu_hsi0 CLK_GOUT_HSI0_USB31DRD_USBPCS_APB_CLK>;
+			samsung,pmu-syscon = <&pmu_system_controller>;
+			status = "disabled";
+		};
+
 		usbdrd: usb@10e00000 {
 			compatible = "samsung,exynos990-dwusb3",
 				     "samsung,exynos850-dwusb3";

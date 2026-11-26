@@ -40,6 +40,19 @@ config DRM_EXYNOS990_DECON_KMS
 
 	  If M is selected the module will be called exynos990-decon-kms.
 
+config DRM_EXYNOS990_DP
+	tristate "Exynos 990 DisplayPort over USB-C (Galaxy S20 FE)"
+	depends on DRM && OF && (ARCH_EXYNOS || COMPILE_TEST)
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	help
+	  The DisplayPort transmitter of the Exynos 990 behind the USB-C port
+	  (DP alt mode), with the USB/DP combo PHY in DP mode and DECON1
+	  scanning out a framebuffer to it: a DRM device of its own with one
+	  DisplayPort connector, up to 1920x1080 over two HBR lanes.
+
+	  If M is selected the module will be called exynos990-dp.
+
 config DRM_BOCHS
 	tristate "DRM Support for bochs dispi vga interface (qemu stdvga)"
 	depends on DRM && PCI && MMU

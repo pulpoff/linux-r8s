@@ -811,6 +811,18 @@
 	};
 };
 
+/*
+ * DisplayPort over the USB-C port (alt mode, pin D, entered by usbc@25):
+ * gpm26-0 reads the plug's orientation, gpp6-1 selects which SBU pin carries
+ * AUX_P and gpp6-2 enables the SBU/AUX switch (low = on).
+ */
+&displayport {
+	orientation-gpios = <&gpm26 0 GPIO_ACTIVE_HIGH>;
+	sbu-sel-gpios = <&gpp6 1 GPIO_ACTIVE_HIGH>;
+	aux-oe-gpios = <&gpp6 2 GPIO_ACTIVE_HIGH>;
+	status = "okay";
+};
+
 &gpu {
 	status = "okay";
 };
