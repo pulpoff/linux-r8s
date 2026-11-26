@@ -30,6 +30,7 @@ snd-soc-midas-wm1811-y := midas_wm1811.o
 snd-soc-exynos990-abox-y := exynos990-abox.o
 snd-soc-r8s-audio-y := r8s_audio.o
 snd-soc-exynos990-vts-slif-y := exynos990-vts-slif.o
+snd-soc-exynos990-dp-audio-y := exynos990-dp-audio.o
 
 obj-$(CONFIG_SND_SOC_SAMSUNG_SMDK_WM8994) += snd-soc-smdk-wm8994.o
 obj-$(CONFIG_SND_SOC_SNOW) += snd-soc-snow.o
@@ -48,3 +49,4 @@ obj-$(CONFIG_SND_SOC_SAMSUNG_MIDAS_WM1811) += snd-soc-midas-wm1811.o
 obj-$(CONFIG_SND_SOC_SAMSUNG_EXYNOS990_ABOX) += snd-soc-exynos990-abox.o
 obj-$(CONFIG_SND_SOC_SAMSUNG_R8S_AUDIO) += snd-soc-r8s-audio.o
 obj-$(CONFIG_SND_SOC_SAMSUNG_EXYNOS990_VTS_SLIF) += snd-soc-exynos990-vts-slif.o
+obj-$(CONFIG_SND_SOC_SAMSUNG_EXYNOS990_DP_AUDIO) += snd-soc-exynos990-dp-audio.o
