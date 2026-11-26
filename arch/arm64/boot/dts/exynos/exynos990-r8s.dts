@@ -369,6 +369,22 @@
 				regulator-min-microvolt = <1800000>;
 				regulator-max-microvolt = <1800000>;
 			};
+
+			/*
+			 * The microSD slot alone: LDO2M its I/O (1.8 V for UHS-I,
+			 * else close to VDD), LDO15M the card.
+			 */
+			ldo2m: ldo2m {
+				regulator-name = "vdd-sd-io";
+				regulator-min-microvolt = <1800000>;
+				regulator-max-microvolt = <2950000>;
+			};
+
+			ldo15m: ldo15m {
+				regulator-name = "vdd-sd-2p95";
+				regulator-min-microvolt = <2950000>;
+				regulator-max-microvolt = <2950000>;
+			};
 		};
 	};
 };
@@ -378,6 +394,13 @@
 };
 
 &pinctrl_alive {
+	/* microSD card detect: high while a card is in, no pull here */
+	sd2_cd: sd2-cd-pins {
+		samsung,pins = "gpa1-5";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+	};
+
 	/* the sensor hub's HOST_REQ: it has data for the AP */
 	shub_host_req: shub-host-req-pins {
 		samsung,pins = "gpa1-7";
@@ -842,6 +865,30 @@
 	status = "okay";
 	vdd10-supply = <&reg_dummy>;
 	vdd33-supply = <&reg_dummy>;
+};
+
+/*
+ * microSD slot, 4 bits wide. With CMU_TOP's MMC_CARD mux on PLL_MMC
+ * (808 MHz) the controller's own /4 (ciu-div 3) gives at most 202 MHz,
+ * for SDR104. Drive phase 2, sample phase 0 (1 in DDR); SDR50 and SDR104
+ * tune the sample phase.
+ */
+&mmc_2 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&sd2_clk &sd2_cmd &sd2_bus1 &sd2_bus4 &sd2_cd>;
+	vmmc-supply = <&ldo15m>;
+	vqmmc-supply = <&ldo2m>;
+	cd-gpios = <&gpa1 5 GPIO_ACTIVE_HIGH>;
+	card-detect-delay = <200>;
+	bus-width = <4>;
+	cap-sd-highspeed;
+	sd-uhs-sdr50;
+	sd-uhs-sdr104;
+	disable-wp;
+	samsung,dw-mshc-ciu-div = <3>;
+	samsung,dw-mshc-sdr-timing = <0 2>;
+	samsung,dw-mshc-ddr-timing = <1 2>;
+	status = "okay";
 };
 
 &pcie_0 {

@@ -191,6 +191,19 @@
 		clock-output-names = "ufs_core";
 	};
 
+	/*
+	 * The SD card host's bus clock, MMC_CARD I_ACLK in CMU_HSI1, which
+	 * has no driver yet: S-Boot leaves it as it is. dw_mmc only switches
+	 * its bus clock on and off, never asks its rate; this stand-in keeps
+	 * it from switching off the HSI1 bus gate, which UFS and PCIe ride on.
+	 */
+	mmc_card_aclk: clock-mmc-card-aclk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <0>;
+		clock-output-names = "mmc_card_aclk";
+	};
+
 	firmware {
 		/*
 		 * The APM firmware: DVFS (it sets each domain's voltage with the rate), through the AP-to-APM mailbox and
@@ -989,6 +1002,26 @@
 			clock-names = "ref_clk";
 			samsung,pmu-syscon = <&pmu_system_controller>;
 			#phy-cells = <0>;
+			status = "disabled";
+		};
+
+		/*
+		 * The SD card host (DesignWare MSHC, 64-word FIFO), as the
+		 * Exynos7870's: no MPS/SMU block in front of it, so no inline
+		 * crypto to set up. Its card clock is CMU_TOP's HSI1 MMC_CARD
+		 * divider (PLL_MMC, 808 MHz, when its mux selects it), passed on
+		 * by CMU_HSI1. Not dma-coherent: the HSI1 sysreg's MMC
+		 * sharability bits (+0x700, mask 0x30000) stay clear.
+		 */
+		mmc_2: mmc@132e0000 {
+			compatible = "samsung,exynos7870-dw-mshc";
+			reg = <0x132e0000 0x2000>;
+			interrupts = <GIC_SPI 313 IRQ_TYPE_LEVEL_HIGH>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			clocks = <&mmc_card_aclk>, <&cmu_top CLK_DOUT_CMU_HSI1_MMC_CARD>;
+			clock-names = "biu", "ciu";
+			fifo-depth = <0x40>;
 			status = "disabled";
 		};
 
