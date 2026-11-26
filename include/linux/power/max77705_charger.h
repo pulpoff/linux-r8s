@@ -147,6 +147,15 @@
 #define MAX77705_WCIN_HOT_MA		600
 #define MAX77705_WCIN_HOT_LCD_MA	450
 #define MAX77705_WCIN_POLL_MS		10000
+/*
+ * stock's cut on a hot charger thermistor (battery,chg_high_temp and the
+ * rest): input and charge current capped from 47.0 C until 45.0 C
+ */
+#define MAX77705_CHG_ZONE		"charger-thermal"
+#define MAX77705_CHG_HOT_MC		47000
+#define MAX77705_CHG_COOL_MC		45000
+#define MAX77705_CHG_HOT_INPUT_UA	1000000
+#define MAX77705_CHG_HOT_CHARGE_UA	1900000
 #define MAX77705_AUTO_SKIP		0
 
 #define AICL_WORK_DELAY_MS		100
@@ -222,6 +231,10 @@ struct max77705_charger_data {
 	bool			bat_hot;	/* charging stopped for the heat */
 	int			zone_misses;	/* looks without the battery zone */
 	bool			unbinding;	/* no more temperature checks */
+	struct mutex		limit_lock;	/* the two limits below and chg_hot */
+	int			input_ua;	/* input limit asked for, 0 = none yet */
+	int			charge_ua;	/* charge current asked for, 0 = none yet */
+	bool			chg_hot;	/* both capped for the charger's heat */
 	struct power_supply	*psy_chg;
 };
 
