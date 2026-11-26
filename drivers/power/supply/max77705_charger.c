@@ -656,16 +656,29 @@ static void max77705_wcin_derate_temps(struct max77705_charger_data *chg,
 }
 
 /*
- * Stock's wireless thermal policy (battery,wpc_high_temp and the rest): from
- * 41.0 C on the battery thermistor (the S20 FE; 38.0 C on the S10e) the input
- * is held at 600 mA, 450 mA with the screen on, until the battery is back at
- * 38.0 C (36.0 C). A board without the battery thermistor's zone gets no
- * derating.
+ * Stock's wireless thermal policy (battery,wpc_high_temp and the rest): with
+ * the screen off, from 41.0 C on the battery thermistor (the S20 FE; 38.0 C on
+ * the S10e) the input is held at 600 mA until the battery is back at 38.0 C
+ * (36.0 C). With the screen on stock limits only a high-voltage pad, and the
+ * receiver here runs Qi at 5 V: the input is not limited and a hold is let go,
+ * as it is when the pad goes away. No backlight counts as the screen off. A
+ * board without the battery thermistor's zone gets no derating.
  */
 static int max77705_wcin_ceiling(struct max77705_charger_data *chg)
 {
 	struct backlight_device *bd = NULL;
-	int mc, ma, hot_mc, cool_mc;
+	int mc, hot_mc, cool_mc;
+
+#if IS_REACHABLE(CONFIG_BACKLIGHT_CLASS_DEVICE)
+	bd = backlight_device_get_by_type(BACKLIGHT_RAW);
+#endif
+	if (bd && !backlight_is_blank(bd)) {
+		if (chg->wcin_hot) {
+			chg->wcin_hot = false;
+			dev_info(chg->dev, "screen on: wireless input released\n");
+		}
+		return chg->wcin_max_ma;
+	}
 
 	if (max77705_battery_mc(&mc))
 		return chg->wcin_max_ma;
@@ -683,12 +696,7 @@ static int max77705_wcin_ceiling(struct max77705_charger_data *chg)
 	if (!chg->wcin_hot)
 		return chg->wcin_max_ma;
 
-#if IS_REACHABLE(CONFIG_BACKLIGHT_CLASS_DEVICE)
-	bd = backlight_device_get_by_type(BACKLIGHT_RAW);
-#endif
-	ma = bd && !backlight_is_blank(bd) ? MAX77705_WCIN_HOT_LCD_MA : MAX77705_WCIN_HOT_MA;
-
-	return min(ma, chg->wcin_max_ma);
+	return min(MAX77705_WCIN_HOT_MA, chg->wcin_max_ma);
 }
 
 /*
@@ -731,6 +739,7 @@ static void max77705_wcin_work(struct work_struct *work)
 		if (chg->wcin_ma)
 			dev_info(chg->dev, "wireless input gone\n");
 		chg->wcin_ma = 0;
+		chg->wcin_hot = false;
 	} else {
 		if (!chg->wcin_ma)
 			dev_info(chg->dev, "wireless input present\n");
