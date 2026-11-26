@@ -25,6 +25,7 @@
  * is not inside it is refused.
  */
 
+#include <linux/bitfield.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -143,6 +144,36 @@
 #define  SYSREG_WDMA_MUX_IDLE		0xffffffff
 #define SYSREG_PHY_RESET	0x500			/* MIPI_PHY_CON: 1 = released */
 
+/*
+ * The bus traffic shapers on CSIS's two AXI ports, in the always-on bus
+ * block. Nothing sets them up but the stock kernel, so they are as they
+ * come out of reset. Stock's settings for both: QoS 0xc on reads and
+ * writes, up to 64 writes outstanding, urgent after 15 cycles waiting,
+ * no blocking.
+ */
+#define BTS_CON			0x000
+#define  BTS_CON_QOS_ON			BIT(0)
+#define  BTS_CON_QURGENT_EN		BIT(20)
+#define BTS_TIMEOUT		0x010
+#define  BTS_TIMEOUT_R_MASK		GENMASK(7, 0)
+#define  BTS_TIMEOUT_W_MASK		GENMASK(23, 16)
+#define BTS_RCON		0x020
+#define BTS_RBLK_UPPER		0x024
+#define BTS_WCON		0x040
+#define BTS_WBLK_UPPER		0x044
+#define  BTS_XCON_BLOCKING_EN		BIT(0)
+#define  BTS_XCON_QOS_OVERRIDE		BIT(8)
+#define  BTS_XCON_QOS_MASK		GENMASK(15, 12)
+#define  BTS_BLK_UPPER_MASK		GENMASK(15, 0)
+#define BTS_CSIS_QOS		0xc
+#define BTS_CSIS_RMO		0xffff
+#define BTS_CSIS_WMO		0x40
+#define BTS_CSIS_QURGENT_TH	0xf
+
+static bool bts = true;
+module_param(bts, bool, 0444);
+MODULE_PARM_DESC(bts, "set up the AXI ports' traffic shapers as stock does (default: on; off: only log them)");
+
 /* the PHYs' shared bias block, and the D-PHY lanes (0503 table, D mode) */
 #define PHY_SC_GNR_CON0		0x000			/* the clock lane */
 #define PHY_SD(i)		(0x100 * ((i) + 1))	/* data lane i */
@@ -172,6 +203,8 @@ struct csis_buffer {
 struct csis {
 	struct device *dev;
 	void __iomem *csis, *wdma, *phy, *phy_bias, *dma_top, *sysreg, *pmu_iso;
+	void __iomem *bts[2];		/* the AXI ports' traffic shapers, if given */
+	bool bts_logged;
 	struct clk_bulk_data *clks;
 	int n_clks;
 	u32 id, wdma_id, reset_bit;
@@ -323,6 +356,44 @@ static void csis_dma_set(struct csis *c, struct csis_buffer *b)
 	}
 }
 
+static void csis_bts_setup(struct csis *c)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(c->bts); i++) {
+		void __iomem *b = c->bts[i];
+
+		if (!b)
+			continue;
+		if (!c->bts_logged)
+			dev_info(c->dev, "BTS D%d: con %#x timeout %#x rcon %#x rblk %#x wcon %#x wblk %#x\n",
+				 i, readl(b + BTS_CON), readl(b + BTS_TIMEOUT),
+				 readl(b + BTS_RCON), readl(b + BTS_RBLK_UPPER),
+				 readl(b + BTS_WCON), readl(b + BTS_WBLK_UPPER));
+		if (!bts)
+			continue;
+
+		/* in stock's order: QoS, outstanding transactions, urgency, blocking */
+		rmw(b + BTS_RCON, BTS_XCON_QOS_OVERRIDE | BTS_XCON_QOS_MASK,
+		    BTS_XCON_QOS_OVERRIDE | FIELD_PREP(BTS_XCON_QOS_MASK, BTS_CSIS_QOS));
+		rmw(b + BTS_WCON, BTS_XCON_QOS_OVERRIDE | BTS_XCON_QOS_MASK,
+		    BTS_XCON_QOS_OVERRIDE | FIELD_PREP(BTS_XCON_QOS_MASK, BTS_CSIS_QOS));
+		rmw(b + BTS_CON, BTS_CON_QOS_ON, BTS_CON_QOS_ON);
+		rmw(b + BTS_RBLK_UPPER, BTS_BLK_UPPER_MASK, BTS_CSIS_RMO);
+		rmw(b + BTS_WBLK_UPPER, BTS_BLK_UPPER_MASK, BTS_CSIS_WMO);
+		rmw(b + BTS_TIMEOUT, BTS_TIMEOUT_R_MASK | BTS_TIMEOUT_W_MASK,
+		    FIELD_PREP(BTS_TIMEOUT_R_MASK, BTS_CSIS_QURGENT_TH) |
+		    FIELD_PREP(BTS_TIMEOUT_W_MASK, BTS_CSIS_QURGENT_TH));
+		rmw(b + BTS_CON, BTS_CON_QURGENT_EN, BTS_CON_QURGENT_EN);
+		rmw(b + BTS_RCON, BTS_XCON_BLOCKING_EN, 0);
+		rmw(b + BTS_WCON, BTS_XCON_BLOCKING_EN, 0);
+	}
+	if (!c->bts_logged && (c->bts[0] || c->bts[1]))
+		dev_info(c->dev, "bus clock %lu Hz, BTS %s\n", clk_get_rate(c->clks[0].clk),
+			 bts ? "set as stock" : "left alone");
+	c->bts_logged = true;
+}
+
 static void csis_hw_start(struct csis *c, u32 mbps)
 {
 	u32 w = c->fmt.width, h = c->fmt.height;
@@ -336,6 +407,7 @@ static void csis_hw_start(struct csis *c, u32 mbps)
 
 	/* the WDMA takes this link */
 	writel(c->id, c->sysreg + SYSREG_WDMA_MUX(c->wdma_id));
+	csis_bts_setup(c);
 
 	writel(readl(c->csis + CSIS_CMN_CTRL) | CMN_CTRL_SW_RESET, c->csis + CSIS_CMN_CTRL);
 	for (n = 0; n < 10 && (readl(c->csis + CSIS_CMN_CTRL) & CMN_CTRL_SW_RESET); n++)
@@ -995,7 +1067,7 @@ static int csis_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct csis *c;
-	int irq, ret;
+	int irq, ret, i;
 
 	c = devm_kzalloc(dev, sizeof(*c), GFP_KERNEL);
 	if (!c)
@@ -1028,6 +1100,15 @@ static int csis_probe(struct platform_device *pdev)
 	c->pmu_iso = csis_map(pdev, "pmu-iso");
 	if (IS_ERR(c->phy_bias) || IS_ERR(c->dma_top) || IS_ERR(c->sysreg) || IS_ERR(c->pmu_iso))
 		return dev_err_probe(dev, -ENODEV, "phy-bias / dma-top / sysreg / pmu-iso\n");
+	/* optional: without them the ports keep what they have */
+	for (i = 0; i < ARRAY_SIZE(c->bts); i++) {
+		char name[8];
+
+		snprintf(name, sizeof(name), "bts-d%d", i);
+		c->bts[i] = csis_map(pdev, name);
+		if (IS_ERR(c->bts[i]))
+			c->bts[i] = NULL;
+	}
 
 	c->n_clks = devm_clk_bulk_get_all(dev, &c->clks);
 	if (c->n_clks < 0)

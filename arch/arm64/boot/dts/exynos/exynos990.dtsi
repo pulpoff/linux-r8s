@@ -1177,7 +1177,9 @@
 		 * common top, SYSREG_CSIS (the PHY resets and the WDMA input
 		 * muxes) and the PMU's MIPI PHY isolation word are shared with
 		 * the other links. The SysMMUs are not used: the WDMA writes
-		 * 32-bit physical addresses.
+		 * 32-bit physical addresses. bts-d0 and bts-d1 are the bus
+		 * traffic shapers on CSIS's two AXI ports, in the always-on bus
+		 * block.
 		 */
 		csis4: csis@17070000 {
 			compatible = "samsung,exynos990-csis";
@@ -1187,9 +1189,11 @@
 			      <0x170d1000 0x10>,
 			      <0x170c0000 0x100>,
 			      <0x17020000 0x1000>,
-			      <0x15860730 0x4>;
+			      <0x15860730 0x4>,
+			      <0x1b000000 0x100>,
+			      <0x1b010000 0x100>;
 			reg-names = "csis", "wdma", "phy", "phy-bias", "dma-top",
-				    "sysreg", "pmu-iso";
+				    "sysreg", "pmu-iso", "bts-d0", "bts-d1";
 			interrupts = <GIC_SPI 186 IRQ_TYPE_LEVEL_HIGH>,
 				     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;
 			interrupt-names = "csis", "dma";
