@@ -645,6 +645,7 @@ config CHARGER_MAX77705
 config CHARGER_MAX77705_USBC
 	tristate "Maxim MAX77705 USB Type-C/PD input current"
 	depends on I2C && CHARGER_MAX77705
+	depends on USB_ROLE_SWITCH || !USB_ROLE_SWITCH
 	select REGMAP_I2C
 	help
 	  Say Y to let the MAX77705's USB Type-C/PD block set the charger's

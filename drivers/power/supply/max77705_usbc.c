@@ -27,6 +27,11 @@
  * firmware runs Discover SVIDs and Modes itself), Enter Mode and DP Configure
  * through its VDM opcode. The DP transmitter's driver finds the sink over
  * AUX by itself. Alt mode ends with the attach, and starts again on the next.
+ *
+ * The data role the firmware settles on goes to the USB controller's role
+ * switch, found through the connector's port@0: host while we are the DFP (a
+ * hub or dock that took the UFP role, or a device we source), device
+ * otherwise.
  */
 
 #include <linux/bitfield.h>
@@ -44,6 +49,7 @@
 #include <linux/thermal.h>
 #include <linux/unaligned.h>
 #include <linux/usb/pd.h>
+#include <linux/usb/role.h>
 #include <linux/workqueue.h>
 
 #define MAX77705_USBC_HW_REV		0x00
@@ -158,6 +164,10 @@ struct max77705_usbc {
 	bool recheck;			/* the answer to that is due */
 	bool event;			/* a status change not handled yet */
 	unsigned int dp_tries;		/* DP alt mode entries in this attach */
+	struct fwnode_handle *conn;	/* the connector node, while the role switch is awaited */
+	struct usb_role_switch *role_sw;
+	unsigned long role_until;	/* jiffies: stop waiting for the role switch */
+	enum usb_role role;		/* what the switch was given, USB_ROLE_NONE before */
 	unsigned long dp_next;		/* jiffies: not before then */
 	char why[48];
 
@@ -518,6 +528,40 @@ static void max77705_usbc_dp_altmode(struct max77705_usbc *u)
 		u->dp_tries = DP_ALTMODE_TRIES;		/* done for this attach */
 }
 
+#define ROLE_WAIT_MS			60000
+
+/* host or device for the USB controller; the switch may register after us */
+static void max77705_usbc_set_role(struct max77705_usbc *u, bool host)
+{
+	enum usb_role role = host ? USB_ROLE_HOST : USB_ROLE_DEVICE;
+	struct usb_role_switch *sw;
+	int ret;
+
+	if (!u->role_sw && u->conn) {
+		sw = fwnode_usb_role_switch_get(u->conn);
+		if (IS_ERR_OR_NULL(sw) &&
+		    (PTR_ERR(sw) != -EPROBE_DEFER || time_after(jiffies, u->role_until))) {
+			dev_info(u->dev, "no USB role switch (%d): the controller keeps its mode\n",
+				 PTR_ERR_OR_ZERO(sw));
+			sw = NULL;
+		}
+		if (!IS_ERR(sw)) {
+			u->role_sw = sw;
+			fwnode_handle_put(u->conn);
+			u->conn = NULL;
+		}
+	}
+	if (!u->role_sw || role == u->role)
+		return;
+	ret = usb_role_switch_set_role(u->role_sw, role);
+	if (ret) {
+		dev_warn(u->dev, "USB role %s: %d\n", usb_role_string(role), ret);
+		return;
+	}
+	u->role = role;
+	dev_info(u->dev, "USB data role: %s\n", usb_role_string(role));
+}
+
 static void max77705_usbc_update(struct max77705_usbc *u)
 {
 	bool online, was_online = u->online;
@@ -538,6 +582,7 @@ static void max77705_usbc_update(struct max77705_usbc *u)
 
 	/* VBUS from a source; as a source ourselves we are not supplied */
 	online = (st[ST_BC] & BC_VBUSDET) && ccstat != CCSTAT_SOURCE;
+	max77705_usbc_set_role(u, ccstat == CCSTAT_SOURCE || (online && (st[ST_PD1] & PD1_DFP)));
 	if (!online) {
 		u->npdos = 0;
 		u->sel = 0;
@@ -660,6 +705,9 @@ static void max77705_usbc_work(struct work_struct *work)
 	u->event = false;
 	max77705_usbc_update(u);
 	next = u->irq > 0 ? (u->online ? TEMP_POLL_MS : 0) : POLL_MS;
+	/* the USB controller's role switch, not registered yet */
+	if (u->conn)
+		next = min_t(unsigned long, next ?: POLL_MS, POLL_MS);
 	/*
 	 * Built in, this probes before the ADC and its thermal zones: look for
 	 * the battery temperature again soon rather than at the next poll.
@@ -778,6 +826,14 @@ static void max77705_usbc_parse_connector(struct max77705_usbc *u)
 	fwnode_handle_put(conn);
 }
 
+static void max77705_usbc_put_role(void *data)
+{
+	struct max77705_usbc *u = data;
+
+	usb_role_switch_put(u->role_sw);
+	fwnode_handle_put(u->conn);
+}
+
 static void max77705_usbc_restore(void *data)
 {
 	struct max77705_usbc *u = data;
@@ -820,6 +876,12 @@ static int max77705_usbc_probe(struct i2c_client *client)
 		return dev_err_probe(dev, ret, "no answer\n");
 
 	max77705_usbc_parse_connector(u);
+	/* the role switch is looked up from the first update on */
+	u->conn = device_get_named_child_node(dev, "connector");
+	u->role_until = jiffies + msecs_to_jiffies(ROLE_WAIT_MS);
+	ret = devm_add_action_or_reset(dev, max77705_usbc_put_role, u);
+	if (ret)
+		return ret;
 
 	/* the charger; its settings come back on unbind */
 	u->charger = power_supply_get_by_name(max77705_usbc_supplied_to[0]);
