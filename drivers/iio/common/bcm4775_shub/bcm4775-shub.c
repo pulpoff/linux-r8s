@@ -100,6 +100,7 @@
 #define HUB_TS_OFFSET		0xa8
 
 #define SENSOR_ACCEL		0
+#define SENSOR_GYRO		1
 #define SENSOR_MAG		4
 #define SENSOR_PROX		7
 #define SENSOR_LIGHT		9
@@ -246,7 +247,7 @@ struct shub_sensor {
 	wait_queue_head_t wait;
 };
 
-enum { SHUB_ACC, SHUB_LIGHT, SHUB_PROX, SHUB_MAG, SHUB_NSENS };
+enum { SHUB_ACC, SHUB_LIGHT, SHUB_PROX, SHUB_MAG, SHUB_GYRO, SHUB_NSENS };
 
 struct shub {
 	struct spi_device *spi;
@@ -1583,6 +1584,27 @@ static const struct iio_chan_spec shub_accel_channels[] = {
 	SHUB_ACCEL_CHAN(Z, 2),
 };
 
+/*
+ * The gyroscope: s32 x, y, z, in the accelerometer's axes. Stock leaves the
+ * range at 1000 dps and takes the LSM6DSO's 70 mdps a step, so the scale is
+ * 0.07 dps (1.2217 mrad/s) a step; still to be checked by turning the phone.
+ */
+#define SHUB_GYRO_CHAN(axis, idx) {					\
+	.type = IIO_ANGL_VEL,						\
+	.modified = 1,							\
+	.channel2 = IIO_MOD_##axis,					\
+	.address = idx,							\
+	.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),			\
+	.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE) |		\
+				    BIT(IIO_CHAN_INFO_SAMP_FREQ),	\
+}
+
+static const struct iio_chan_spec shub_gyro_channels[] = {
+	SHUB_GYRO_CHAN(X, 0),
+	SHUB_GYRO_CHAN(Y, 1),
+	SHUB_GYRO_CHAN(Z, 2),
+};
+
 #define SHUB_INTENSITY_CHAN(mod, off) {					\
 	.type = IIO_INTENSITY,						\
 	.modified = 1,							\
@@ -1662,6 +1684,12 @@ static int shub_read_raw(struct iio_dev *indio, struct iio_chan_spec const *chan
 		*val2 = 2394202;
 		return IIO_VAL_INT_PLUS_NANO;
 	}
+	if (mask == IIO_CHAN_INFO_SCALE && chan->type == IIO_ANGL_VEL) {
+		/* 0.07 dps a step, in rad/s */
+		*val = 0;
+		*val2 = 1221730;
+		return IIO_VAL_INT_PLUS_NANO;
+	}
 	ret = shub_get_sample(s, d, sizeof(d));
 	if (ret)
 		return ret;
@@ -1669,6 +1697,9 @@ static int shub_read_raw(struct iio_dev *indio, struct iio_chan_spec const *chan
 	switch (chan->type) {
 	case IIO_ACCEL:
 		*val = (s16)get_unaligned_le16(d + 2 * chan->address);
+		return IIO_VAL_INT;
+	case IIO_ANGL_VEL:
+		*val = (s32)get_unaligned_le32(d + 4 * chan->address);
 		return IIO_VAL_INT;
 	case IIO_LIGHT:
 		*val = get_unaligned_le32(d);
@@ -1929,6 +1960,9 @@ static int shub_probe(struct spi_device *spi)
 
 	ret = shub_add_sensor(h, SHUB_ACC, "bcm4775-accel", SENSOR_ACCEL, 100,
 			      shub_accel_channels, ARRAY_SIZE(shub_accel_channels));
+	if (!ret)
+		ret = shub_add_sensor(h, SHUB_GYRO, "bcm4775-gyro", SENSOR_GYRO, 100,
+				      shub_gyro_channels, ARRAY_SIZE(shub_gyro_channels));
 	if (!ret)
 		ret = shub_add_sensor(h, SHUB_LIGHT, "bcm4775-light", SENSOR_LIGHT, 200,
 				      shub_light_channels, ARRAY_SIZE(shub_light_channels));
