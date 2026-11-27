@@ -174,6 +174,21 @@ static bool bts = true;
 module_param(bts, bool, 0444);
 MODULE_PARM_DESC(bts, "set up the AXI ports' traffic shapers as stock does (default: on; off: only log them)");
 
+/*
+ * The CSIS bus clock (CMU_TOP) belongs to the APM firmware's CAM domain, which
+ * sets it with CAM's level, after CAM's voltage. Its levels are named by IDs:
+ * 690000 to 640000 kHz for L0 to L5. The bootloader leaves CAM at L5, the
+ * CSIS bus at 88.9 MHz: too slow for a 4-lane sensor at full rate. L4 runs
+ * it at 222 MHz. The receiver asks for cam_level while it streams, and for L5
+ * again when it stops.
+ */
+#define CSIS_CAM_LEVEL_HZ(l)	((690000UL - 10000UL * (l)) * 1000UL)
+#define CSIS_CAM_LEVEL_BOOT	5
+
+static int cam_level = 4;
+module_param(cam_level, int, 0444);
+MODULE_PARM_DESC(cam_level, "the CAM level while streaming, 0-5 (default 4: the CSIS bus at 222 MHz; 5: leave CAM at its boot level)");
+
 /* the PHYs' shared bias block, and the D-PHY lanes (0503 table, D mode) */
 #define PHY_SC_GNR_CON0		0x000			/* the clock lane */
 #define PHY_SD(i)		(0x100 * ((i) + 1))	/* data lane i */
@@ -207,6 +222,9 @@ struct csis {
 	bool bts_logged;
 	struct clk_bulk_data *clks;
 	int n_clks;
+	struct clk *cam_dvfs;		/* the CAM domain, if given */
+	struct clk *bus;		/* CMU_TOP's CSIS bus mux, read back after a CAM request */
+	int cam_req;			/* the CAM level asked for, -1 before the first */
 	u32 id, wdma_id, reset_bit;
 	bool dc_combo;
 	unsigned int lanes;
@@ -392,6 +410,30 @@ static void csis_bts_setup(struct csis *c)
 		dev_info(c->dev, "bus clock %lu Hz, BTS %s\n", clk_get_rate(c->clks[0].clk),
 			 bts ? "set as stock" : "left alone");
 	c->bts_logged = true;
+}
+
+/* ask the APM firmware for a CAM level; the bus clock is read back from CMU_TOP's registers */
+static int csis_cam_level(struct csis *c, int level)
+{
+	int ret;
+
+	ret = clk_set_rate(c->cam_dvfs, CSIS_CAM_LEVEL_HZ(level));
+	if (ret) {
+		dev_err(c->dev, "CAM level L%d: %d\n", level, ret);
+		return ret;
+	}
+	c->cam_req = level;
+	if (c->bus)
+		clk_get_rate(c->bus);	/* recalculates the clocks below it from the registers */
+	dev_info(c->dev, "CAM level L%d, bus clock %lu Hz\n", level, clk_get_rate(c->clks[0].clk));
+	return 0;
+}
+
+/* back to the boot level, if anything else was asked for */
+static void csis_cam_release(struct csis *c)
+{
+	if (c->cam_dvfs && c->cam_req >= 0 && c->cam_req != CSIS_CAM_LEVEL_BOOT)
+		csis_cam_level(c, CSIS_CAM_LEVEL_BOOT);
 }
 
 static void csis_hw_start(struct csis *c, u32 mbps)
@@ -659,6 +701,12 @@ static int csis_start_streaming(struct vb2_queue *q, unsigned int count)
 	if (ret)
 		goto err_return;
 
+	if (c->cam_dvfs && cam_level >= 0 && cam_level < CSIS_CAM_LEVEL_BOOT) {
+		ret = csis_cam_level(c, cam_level);
+		if (ret)
+			goto err_pipeline;
+	}
+
 	ret = pm_runtime_resume_and_get(c->dev);
 	if (ret)
 		goto err_pipeline;
@@ -689,6 +737,7 @@ err_hw:
 	csis_hw_stop(c);
 	pm_runtime_put(c->dev);
 err_pipeline:
+	csis_cam_release(c);
 	video_device_pipeline_stop(&c->vdev);
 err_return:
 	csis_return_buffers(c, VB2_BUF_STATE_QUEUED);
@@ -717,6 +766,7 @@ static void csis_stop_streaming(struct vb2_queue *q)
 			 c->sequence, frames, phy, c->errors, c->err_csis0, c->err_csis1,
 			 c->err_dma, c->err_code);
 	pm_runtime_put(c->dev);
+	csis_cam_release(c);
 	video_device_pipeline_stop(&c->vdev);
 	csis_return_buffers(c, VB2_BUF_STATE_ERROR);
 }
@@ -1113,6 +1163,29 @@ static int csis_probe(struct platform_device *pdev)
 	c->n_clks = devm_clk_bulk_get_all(dev, &c->clks);
 	if (c->n_clks < 0)
 		return dev_err_probe(dev, c->n_clks, "clocks\n");
+	/*
+	 * cam-dvfs and bus are not the receiver's own clocks: take them out of
+	 * the set it enables (swapped to the end, so that devres still puts them)
+	 */
+	c->cam_req = -1;
+	for (i = 0; i < c->n_clks; i++) {
+		struct clk **slot;
+
+		if (!c->clks[i].id)
+			continue;
+		if (!strcmp(c->clks[i].id, "cam-dvfs"))
+			slot = &c->cam_dvfs;
+		else if (!strcmp(c->clks[i].id, "bus"))
+			slot = &c->bus;
+		else
+			continue;
+		*slot = c->clks[i].clk;
+		swap(c->clks[i], c->clks[c->n_clks - 1]);
+		c->n_clks--;
+		i--;
+	}
+	if (!c->n_clks || strcmp(c->clks[0].id ?: "", "csis"))
+		return dev_err_probe(dev, -EINVAL, "the first clock must be csis\n");
 
 	irq = platform_get_irq_byname(pdev, "csis");
 	if (irq < 0)
@@ -1178,6 +1251,7 @@ static void csis_remove(struct platform_device *pdev)
 	media_device_unregister(&c->mdev);
 	if (video_is_registered(&c->vdev))
 		vb2_video_unregister_device(&c->vdev);
+	csis_cam_release(c);
 	v4l2_device_unregister(&c->v4l2_dev);
 	media_device_cleanup(&c->mdev);
 	pm_runtime_disable(&pdev->dev);
