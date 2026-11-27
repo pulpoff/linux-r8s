@@ -242,8 +242,10 @@ free_clk_save:
  * 1. Enable parent clock of @cmu CMU
  * 2. Set initial registers configuration for @cmu CMU clocks
  * 3. Register @cmu CMU clocks using Samsung clock framework API
+ *
+ * Return: the clock provider, for clocks a SoC driver registers itself.
  */
-void __init exynos_arm64_register_cmu(struct device *dev,
+struct samsung_clk_provider * __init exynos_arm64_register_cmu(struct device *dev,
 		struct device_node *np, const struct samsung_cmu_info *cmu)
 {
 	int err;
@@ -258,7 +260,7 @@ void __init exynos_arm64_register_cmu(struct device *dev,
 		       __func__, cmu->clk_name, err);
 
 	exynos_arm64_init_clocks(np, cmu);
-	samsung_cmu_register_one(np, cmu);
+	return samsung_cmu_register_one(np, cmu);
 }
 
 /**
