@@ -11,6 +11,12 @@ with the phone. Bluetooth and the cameras are not done yet.
 The tree is stable **v7.2.15** plus the S20 FE changes below, each its own commit on `main`; new
 work is pushed as it lands. 7.2 is end of life on kernel.org and this tree stays on 7.2.15.
 
+Releases
+========
+
+* `vibeos-0.1.4.3`: the kernel, modules and sensor-hub module shipped in VibeOS 0.1.4.3.
+* `vibeos-0.1.5`: the same kernel, modules and sensor-hub module, as shipped in VibeOS 0.1.5.
+
 What works
 ==========
 
