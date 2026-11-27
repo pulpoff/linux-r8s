@@ -11,6 +11,7 @@
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
+#include <linux/slab.h>
 
 #include <dt-bindings/clock/samsung,exynos990.h>
 
@@ -281,7 +282,6 @@ static const unsigned long top_clk_regs[] __initconst = {
 	CLK_CON_MUX_MUX_CLKCMU_CPUCL1_SWITCH,
 	CLK_CON_MUX_MUX_CLKCMU_CPUCL2_BUSP,
 	CLK_CON_MUX_MUX_CLKCMU_CPUCL2_SWITCH,
-	CLK_CON_MUX_MUX_CLKCMU_CSIS_BUS,
 	CLK_CON_MUX_MUX_CLKCMU_CSIS_OIS_MCU,
 	CLK_CON_MUX_MUX_CLKCMU_DNC_BUS,
 	CLK_CON_MUX_MUX_CLKCMU_DNC_BUSM,
@@ -303,7 +303,6 @@ static const unsigned long top_clk_regs[] __initconst = {
 	CLK_CON_MUX_MUX_CLKCMU_HSI1_UFS_EMBD,
 	CLK_CON_MUX_MUX_CLKCMU_HSI2_BUS,
 	CLK_CON_MUX_MUX_CLKCMU_HSI2_PCIE,
-	CLK_CON_MUX_MUX_CLKCMU_IPP_BUS,
 	CLK_CON_MUX_MUX_CLKCMU_ITP_BUS,
 	CLK_CON_MUX_MUX_CLKCMU_MCSC_BUS,
 	CLK_CON_MUX_MUX_CLKCMU_MCSC_GDC,
@@ -341,7 +340,6 @@ static const unsigned long top_clk_regs[] __initconst = {
 	CLK_CON_DIV_CLKCMU_CPUCL1_SWITCH,
 	CLK_CON_DIV_CLKCMU_CPUCL2_BUSP,
 	CLK_CON_DIV_CLKCMU_CPUCL2_SWITCH,
-	CLK_CON_DIV_CLKCMU_CSIS_BUS,
 	CLK_CON_DIV_CLKCMU_CSIS_OIS_MCU,
 	CLK_CON_DIV_CLKCMU_DNC_BUS,
 	CLK_CON_DIV_CLKCMU_DNC_BUSM,
@@ -362,7 +360,6 @@ static const unsigned long top_clk_regs[] __initconst = {
 	CLK_CON_DIV_CLKCMU_HSI1_UFS_EMBD,
 	CLK_CON_DIV_CLKCMU_HSI2_BUS,
 	CLK_CON_DIV_CLKCMU_HSI2_PCIE,
-	CLK_CON_DIV_CLKCMU_IPP_BUS,
 	CLK_CON_DIV_CLKCMU_ITP_BUS,
 	CLK_CON_DIV_CLKCMU_MCSC_BUS,
 	CLK_CON_DIV_CLKCMU_MCSC_GDC,
@@ -773,8 +770,6 @@ static const struct samsung_mux_clock top_mux_clks[] __initconst = {
 	MUX(CLK_MOUT_CMU_CPUCL2_SWITCH, "mout_cmu_cpucl2_switch",
 	    mout_cmu_cpucl2_switch_p, CLK_CON_MUX_MUX_CLKCMU_CPUCL2_SWITCH,
 	    0, 2),
-	MUX(CLK_MOUT_CMU_CSIS_BUS, "mout_cmu_csis_bus",
-	    mout_cmu_csis_bus_p, CLK_CON_MUX_MUX_CLKCMU_CSIS_BUS, 0, 2),
 	MUX(CLK_MOUT_CMU_CSIS_OIS_MCU, "mout_cmu_csis_ois_mcu",
 	    mout_cmu_csis_ois_mcu_p, CLK_CON_MUX_MUX_CLKCMU_CSIS_OIS_MCU,
 	    0, 1),
@@ -823,8 +818,6 @@ static const struct samsung_mux_clock top_mux_clks[] __initconst = {
 	    mout_cmu_hsi2_bus_p, CLK_CON_MUX_MUX_CLKCMU_HSI2_BUS, 0, 1),
 	MUX(CLK_MOUT_CMU_HSI2_PCIE, "mout_cmu_hsi2_pcie",
 	    mout_cmu_hsi2_pcie_p, CLK_CON_MUX_MUX_CLKCMU_HSI2_PCIE, 0, 1),
-	MUX(CLK_MOUT_CMU_IPP_BUS, "mout_cmu_ipp_bus",
-	    mout_cmu_ipp_bus_p, CLK_CON_MUX_MUX_CLKCMU_IPP_BUS, 0, 3),
 	MUX(CLK_MOUT_CMU_ITP_BUS, "mout_cmu_itp_bus",
 	    mout_cmu_itp_bus_p, CLK_CON_MUX_MUX_CLKCMU_ITP_BUS, 0, 3),
 	MUX(CLK_MOUT_CMU_MCSC_BUS, "mout_cmu_mcsc_bus",
@@ -932,8 +925,10 @@ static const struct samsung_div_clock top_div_clks[] __initconst = {
 	    "gout_cmu_cpucl2_busp", CLK_CON_DIV_CLKCMU_CPUCL2_BUSP, 0, 4),
 	DIV(CLK_DOUT_CMU_CPUCL2_SWITCH, "dout_cmu_cpucl2_switch",
 	    "gout_cmu_cpucl2_switch", CLK_CON_DIV_CLKCMU_CPUCL2_SWITCH, 0, 3),
-	DIV(CLK_DOUT_CMU_CSIS_BUS, "dout_cmu_csis_bus", "gout_cmu_csis_bus",
-	    CLK_CON_DIV_CLKCMU_CSIS_BUS, 0, 4),
+	/* ACPM's (see exynos990_acpm_muxes): read only, read from the register every time */
+	DIV_F(CLK_DOUT_CMU_CSIS_BUS, "dout_cmu_csis_bus", "gout_cmu_csis_bus",
+	      CLK_CON_DIV_CLKCMU_CSIS_BUS, 0, 4, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
 	DIV(CLK_DOUT_CMU_CSIS_OIS_MCU, "dout_cmu_csis_ois_mcu",
 	    "gout_cmu_csis_ois_mcu", CLK_CON_DIV_CLKCMU_CSIS_OIS_MCU, 0, 4),
 	DIV(CLK_DOUT_CMU_DNC_BUS, "dout_cmu_dnc_bus", "gout_cmu_dnc_bus",
@@ -971,8 +966,9 @@ static const struct samsung_div_clock top_div_clks[] __initconst = {
 	    0, 3),
 	DIV(CLK_DOUT_CMU_HSI2_BUS, "dout_cmu_hsi2_bus", "gout_cmu_hsi2_bus",
 	    CLK_CON_DIV_CLKCMU_HSI2_BUS, 0, 4),
-	DIV(CLK_DOUT_CMU_IPP_BUS, "dout_cmu_ipp_bus", "gout_cmu_ipp_bus",
-	    CLK_CON_DIV_CLKCMU_IPP_BUS, 0, 4),
+	DIV_F(CLK_DOUT_CMU_IPP_BUS, "dout_cmu_ipp_bus", "gout_cmu_ipp_bus",
+	      CLK_CON_DIV_CLKCMU_IPP_BUS, 0, 4, CLK_GET_RATE_NOCACHE,
+	      CLK_DIVIDER_READ_ONLY),
 	DIV(CLK_DOUT_CMU_ITP_BUS, "dout_cmu_itp_bus", "gout_cmu_itp_bus",
 	    CLK_CON_DIV_CLKCMU_ITP_BUS, 0, 4),
 	DIV(CLK_DOUT_CMU_MCSC_BUS, "dout_cmu_mcsc_bus", "gout_cmu_mcsc_bus",
@@ -1186,9 +1182,96 @@ static const struct samsung_cmu_info top_cmu_info __initconst = {
 	.nr_clk_regs = ARRAY_SIZE(top_clk_regs),
 };
 
+/*
+ * The APM firmware's CAM domain owns CLKCMU_CSIS_BUS and CLKCMU_IPP_BUS: it sets
+ * their muxes and dividers with CAM's level, after CAM's voltage. Linux only
+ * reads them (and leaves them out of the sleep save/restore). The clock
+ * framework never reads a mux's parent again after registration, so these two
+ * muxes take their rate from the parent the register selects now; with
+ * CLK_GET_RATE_NOCACHE, a rate read on one of them recalculates the clocks
+ * below it from the registers.
+ */
+struct exynos990_acpm_mux {
+	struct clk_hw hw;
+	void __iomem *reg;
+	u8 width;
+};
+
+#define to_acpm_mux(_hw) container_of(_hw, struct exynos990_acpm_mux, hw)
+
+static u8 exynos990_acpm_mux_get_parent(struct clk_hw *hw)
+{
+	struct exynos990_acpm_mux *m = to_acpm_mux(hw);
+	u32 sel = readl(m->reg) & GENMASK(m->width - 1, 0);
+
+	return min_t(u32, sel, clk_hw_get_num_parents(hw) - 1);
+}
+
+static unsigned long exynos990_acpm_mux_recalc_rate(struct clk_hw *hw,
+						    unsigned long parent_rate)
+{
+	struct clk_hw *p;
+
+	p = clk_hw_get_parent_by_index(hw, exynos990_acpm_mux_get_parent(hw));
+	return p ? clk_hw_get_rate(p) : parent_rate;
+}
+
+static const struct clk_ops exynos990_acpm_mux_ops = {
+	.get_parent = exynos990_acpm_mux_get_parent,
+	.recalc_rate = exynos990_acpm_mux_recalc_rate,
+};
+
+static const struct {
+	unsigned int id;
+	const char *name;
+	const char * const *parents;
+	u8 num_parents;
+	unsigned long offset;
+	u8 width;
+} exynos990_acpm_muxes[] __initconst = {
+	{ CLK_MOUT_CMU_CSIS_BUS, "mout_cmu_csis_bus", mout_cmu_csis_bus_p,
+	  ARRAY_SIZE(mout_cmu_csis_bus_p), CLK_CON_MUX_MUX_CLKCMU_CSIS_BUS, 2 },
+	{ CLK_MOUT_CMU_IPP_BUS, "mout_cmu_ipp_bus", mout_cmu_ipp_bus_p,
+	  ARRAY_SIZE(mout_cmu_ipp_bus_p), CLK_CON_MUX_MUX_CLKCMU_IPP_BUS, 3 },
+};
+
+static void __init exynos990_register_acpm_muxes(struct samsung_clk_provider *ctx)
+{
+	int i, ret;
+
+	for (i = 0; i < ARRAY_SIZE(exynos990_acpm_muxes); i++) {
+		struct clk_init_data init = {
+			.name = exynos990_acpm_muxes[i].name,
+			.ops = &exynos990_acpm_mux_ops,
+			.parent_names = exynos990_acpm_muxes[i].parents,
+			.num_parents = exynos990_acpm_muxes[i].num_parents,
+			.flags = CLK_GET_RATE_NOCACHE,
+		};
+		struct exynos990_acpm_mux *m;
+
+		m = kzalloc(sizeof(*m), GFP_KERNEL);
+		if (!m)
+			return;
+		m->reg = ctx->reg_base + exynos990_acpm_muxes[i].offset;
+		m->width = exynos990_acpm_muxes[i].width;
+		m->hw.init = &init;
+		ret = clk_hw_register(NULL, &m->hw);
+		if (ret) {
+			pr_err("%s: %s: %d\n", __func__, init.name, ret);
+			kfree(m);
+			continue;
+		}
+		samsung_clk_add_lookup(ctx, &m->hw, exynos990_acpm_muxes[i].id);
+	}
+}
+
 static void __init exynos990_cmu_top_init(struct device_node *np)
 {
-	exynos_arm64_register_cmu(NULL, np, &top_cmu_info);
+	struct samsung_clk_provider *ctx;
+
+	ctx = exynos_arm64_register_cmu(NULL, np, &top_cmu_info);
+	if (ctx)
+		exynos990_register_acpm_muxes(ctx);
 }
 
 /* Register CMU_TOP early, as it's a dependency for other early domains */
