@@ -1206,10 +1206,17 @@
 				 <&cmu_csis CLK_GOUT_CSIS_SYSMMU_D0_CSIS_CLK_S1>,
 				 <&cmu_csis CLK_GOUT_CSIS_SYSMMU_D1_CSIS_CLK_S1>,
 				 <&cmu_csis CLK_GOUT_CSIS_LHS_AXI_D0_CSIS_CLK>,
-				 <&cmu_csis CLK_GOUT_CSIS_LHS_AXI_D1_CSIS_CLK>;
+				 <&cmu_csis CLK_GOUT_CSIS_LHS_AXI_D1_CSIS_CLK>,
+				 <&acpm_ipc EXYNOS990_CLK_ACPM_DVFS_CAM>,
+				 <&cmu_top CLK_MOUT_CMU_CSIS_BUS>;
+			/*
+			 * cam-dvfs: the APM firmware's CAM domain, which sets the CSIS
+			 * bus (CMU_TOP) with CAM's voltage; bus: that clock's mux, read
+			 * back after a CAM request.
+			 */
 			clock-names = "csis", "dma", "pdp-top", "qe-dma0",
 				      "xiu-d0", "xiu-d1", "sysmmu-d0", "sysmmu-d1",
-				      "axi-d0", "axi-d1";
+				      "axi-d0", "axi-d1", "cam-dvfs", "bus";
 			power-domains = <&pd_csis>;
 			samsung,csis-id = <4>;
 			samsung,wdma-id = <0>;
