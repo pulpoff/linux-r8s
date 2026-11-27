@@ -892,6 +892,13 @@
 };
 
 &csis4 {
+	/*
+	 * The bootloader leaves the CSIS bus at 88.9 MHz: at 4 pixels per clock that is less than
+	 * the S5K3L6 sends on 4 lanes at 1196 Mbps (RAW10), and lines arrive partly written.
+	 * 177.75 MHz (SHARED0_DIV4 / 3) gives full frames.
+	 */
+	assigned-clocks = <&cmu_top CLK_DOUT_CMU_CSIS_BUS>;
+	assigned-clock-rates = <177750000>;
 	memory-region = <&camera_mem>;
 	status = "okay";
 
